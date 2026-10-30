@@ -5,7 +5,6 @@ import dev.diamondecon.util.PREFIX
 import dev.diamondecon.util.countItems
 import dev.diamondecon.util.dia
 import dev.diamondecon.util.giveItems
-import dev.diamondecon.util.prettyName
 import dev.diamondecon.util.roomFor
 import dev.diamondecon.util.takeItems
 import org.bukkit.Bukkit
@@ -60,7 +59,7 @@ class ShopListener(
             }
             Action.LEFT_CLICK_BLOCK -> p.sendMessage(
                 "$PREFIX${ChatColor.WHITE}${shop.ownerName}'s shop${ChatColor.GRAY} sells ${ChatColor.AQUA}${shop.quantity}× " +
-                    "${ChatColor.WHITE}${shop.item.prettyName}${ChatColor.GRAY} for ${dia(shop.price)}. Right-click to buy!"
+                    "${ChatColor.WHITE}${shop.displayName}${ChatColor.GRAY} for ${dia(shop.price)}. Right-click to buy!"
             )
             else -> {}
         }
@@ -85,7 +84,7 @@ class ShopListener(
         val paid = try {
             bank.transfer(
                 buyer.uniqueId, shop.owner, shop.price, Bank.TxType.SHOP_PURCHASE,
-                shop.item.type.name, shop.quantity, shop.id,
+                shop.item.type.name, shop.displayName, shop.quantity, shop.id,
             )
         } catch (ex: SQLException) {
             plugin.logger.log(Level.SEVERE, "Shop purchase failed", ex)
@@ -109,7 +108,7 @@ class ShopListener(
         fx.world!!.spawnParticle(Particle.HAPPY_VILLAGER, fx, 12, 0.35, 0.3, 0.35)
         buyer.playSound(fx, Sound.BLOCK_AMETHYST_BLOCK_CHIME, 1f, 1.4f)
         buyer.playSound(fx, Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.6f, 1.2f)
-        val what = "${ChatColor.AQUA}${shop.quantity}× ${ChatColor.WHITE}${shop.item.prettyName}${ChatColor.GRAY}"
+        val what = "${ChatColor.AQUA}${shop.quantity}× ${ChatColor.WHITE}${shop.displayName}${ChatColor.GRAY}"
         buyer.sendMessage("${PREFIX}Bought $what for ${dia(shop.price)}. Thank you! ♥")
         Bukkit.getPlayer(shop.owner)?.sendMessage(
             "$PREFIX${ChatColor.WHITE}${buyer.name}${ChatColor.GRAY} bought $what for ${dia(shop.price)}."

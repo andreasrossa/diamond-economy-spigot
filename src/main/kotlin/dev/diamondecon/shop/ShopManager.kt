@@ -3,7 +3,6 @@ package dev.diamondecon.shop
 import dev.diamondecon.db.Shops
 import dev.diamondecon.util.countItems
 import dev.diamondecon.util.dia
-import dev.diamondecon.util.prettyName
 import org.bukkit.Bukkit
 import org.bukkit.ChatColor
 import org.bukkit.Chunk
@@ -75,7 +74,7 @@ class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
             }
             val key = BlockKey(row[Shops.world], row[Shops.x], row[Shops.y], row[Shops.z])
             Shop(
-                id, row[Shops.ownerUuid], row[Shops.ownerName], key, item,
+                id, row[Shops.ownerUuid], row[Shops.ownerName], key, item, row[Shops.displayName],
                 row[Shops.quantity], row[Shops.price], row[Shops.stock],
             )
         }
@@ -102,7 +101,7 @@ class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
             n.type == block.type && at(n) != null
         }
 
-    fun create(owner: UUID, ownerName: String, block: Block, item: ItemStack, quantity: Int, price: Long): Shop {
+    fun create(owner: UUID, ownerName: String, block: Block, item: ItemStack, name: String?, quantity: Int, price: Long): Shop {
         val key = BlockKey.of(block)
         val proto = item.clone().apply { amount = 1 }
         val id = transaction(db) {
@@ -115,11 +114,12 @@ class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
                 it[z] = key.z
                 it[Shops.item] = serialize(proto)
                 it[itemType] = proto.type.name
+                it[displayName] = name
                 it[Shops.quantity] = quantity
                 it[Shops.price] = price
             }.value
         }
-        val shop = Shop(id, owner, ownerName, key, proto, quantity, price, 0)
+        val shop = Shop(id, owner, ownerName, key, proto, name, quantity, price, 0)
         shops[key] = shop
         spawnDecor(shop)
         refresh(shop)
@@ -135,6 +135,12 @@ class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
     fun setPrice(shop: Shop, price: Long) {
         transaction(db) { Shops.update({ Shops.id eq shop.id }) { it[Shops.price] = price } }
         shop.price = price
+        updateLabel(shop)
+    }
+
+    fun setName(shop: Shop, name: String?) {
+        transaction(db) { Shops.update({ Shops.id eq shop.id }) { it[displayName] = name } }
+        shop.name = name
         updateLabel(shop)
     }
 
@@ -233,7 +239,7 @@ class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
         else "${ChatColor.RED}sold out ${ChatColor.GRAY}:("
         label.text = """
             ${ChatColor.LIGHT_PURPLE}✿ ${ChatColor.WHITE}${shop.ownerName}'s Shop ${ChatColor.LIGHT_PURPLE}✿
-            ${ChatColor.AQUA}${shop.quantity}× ${ChatColor.WHITE}${shop.item.prettyName}
+            ${ChatColor.AQUA}${shop.quantity}× ${ChatColor.WHITE}${shop.displayName}
             ${ChatColor.GRAY}for ${dia(shop.price)}
             $stockLine""".trimIndent()
     }

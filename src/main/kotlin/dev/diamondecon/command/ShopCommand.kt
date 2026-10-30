@@ -6,7 +6,6 @@ import dev.diamondecon.shop.Shop
 import dev.diamondecon.shop.ShopManager
 import dev.diamondecon.util.PREFIX
 import dev.diamondecon.util.dia
-import dev.diamondecon.util.prettyName
 import org.bukkit.ChatColor
 import org.bukkit.block.data.type.Chest
 import org.bukkit.command.Command
@@ -18,7 +17,7 @@ import org.bukkit.plugin.java.JavaPlugin
 import java.sql.SQLException
 import java.util.logging.Level
 
-/** /shop create|remove|price|list, plus admin-only reload|setowner */
+/** /shop create|remove|price|name|list, plus admin-only reload|setowner */
 class ShopCommand(
     private val plugin: JavaPlugin,
     private val shops: ShopManager,
@@ -35,6 +34,7 @@ class ShopCommand(
                 "create" -> create(sender, args)
                 "remove" -> remove(sender)
                 "price" -> price(sender, args)
+                "name" -> name(sender, args)
                 "list" -> list(sender)
                 "reload" -> if (requireAdmin(sender)) reload(sender)
                 "setowner" -> if (requireAdmin(sender)) setOwner(sender, args)
@@ -52,8 +52,10 @@ class ShopCommand(
         val g = ChatColor.GRAY
         p.sendMessage("${ChatColor.AQUA}◆ ${w}Chest shops")
         p.sendMessage("$g  Hold the item you want to sell and look at a chest or barrel:")
-        p.sendMessage("$w  /shop create <amount> <price>$g sell <amount> items for <price> diamonds")
+        p.sendMessage("$w  /shop create <amount> <price> [name]$g sell <amount> items for <price> diamonds")
+        p.sendMessage("$g    The optional name is shown instead of the item's (e.g. Shulker of Dirt). &-colors work.")
         p.sendMessage("$w  /shop price <price>$g change the price of the shop you look at")
+        p.sendMessage("$w  /shop name [name]$g rename the shop you look at (no name: use the item's)")
         p.sendMessage("$w  /shop remove$g close the shop you look at")
         p.sendMessage("$w  /shop list$g list your shops")
         p.sendMessage("$g  Customers right-click to buy. Money goes straight to your bank.")
@@ -65,7 +67,7 @@ class ShopCommand(
 
     private fun create(p: Player, args: Array<String>) {
         if (args.size < 3) {
-            p.sendMessage("${PREFIX}Usage: /shop create <amount> <price>  e.g. /shop create 64 1")
+            p.sendMessage("${PREFIX}Usage: /shop create <amount> <price> [name]  e.g. /shop create 64 1")
             return
         }
         val block = p.getTargetBlockExact(5)
@@ -93,10 +95,11 @@ class ShopCommand(
             return
         }
         val price = parseAmount(p, args[2]) ?: return
+        val name = parseName(p, args.drop(3)) ?: return
 
-        val shop = shops.create(p.uniqueId, p.name, block, hand, quantity.toInt(), price)
+        val shop = shops.create(p.uniqueId, p.name, block, hand, name.ifEmpty { null }, quantity.toInt(), price)
         p.sendMessage(
-            "${PREFIX}Shop open! Selling ${ChatColor.AQUA}${shop.quantity}× ${ChatColor.WHITE}${shop.item.prettyName}" +
+            "${PREFIX}Shop open! Selling ${ChatColor.AQUA}${shop.quantity}× ${ChatColor.WHITE}${shop.displayName}" +
                 "${ChatColor.GRAY} for ${dia(shop.price)}. Fill the chest with stock."
         )
     }
@@ -118,6 +121,16 @@ class ShopCommand(
         p.sendMessage("${PREFIX}Price set to ${dia(price)}.")
     }
 
+    private fun name(p: Player, args: Array<String>) {
+        val shop = lookedAt(p) ?: return
+        val name = parseName(p, args.drop(1)) ?: return
+        shops.setName(shop, name.ifEmpty { null })
+        p.sendMessage(
+            if (name.isEmpty()) "${PREFIX}Name cleared, the shop shows ${ChatColor.WHITE}${shop.displayName}${ChatColor.GRAY} again."
+            else "${PREFIX}Shop renamed to ${ChatColor.WHITE}${shop.displayName}${ChatColor.GRAY}."
+        )
+    }
+
     private fun list(p: Player) {
         val mine = shops.ownedBy(p.uniqueId)
         if (mine.isEmpty()) {
@@ -127,7 +140,7 @@ class ShopCommand(
         p.sendMessage("${ChatColor.AQUA}◆ ${ChatColor.WHITE}Your shops")
         for (s in mine) {
             p.sendMessage(
-                "${ChatColor.GRAY}  ${s.quantity}× ${ChatColor.WHITE}${s.item.prettyName}${ChatColor.GRAY} for ${dia(s.price)}" +
+                "${ChatColor.GRAY}  ${s.quantity}× ${ChatColor.WHITE}${s.displayName}${ChatColor.GRAY} for ${dia(s.price)}" +
                     " · stock ${s.stock}${ChatColor.DARK_GRAY} @ ${s.key}"
             )
         }
@@ -155,6 +168,24 @@ class ShopCommand(
         }
         shops.setOwner(shop, target.uuid, target.name)
         p.sendMessage("${PREFIX}The shop now belongs to ${ChatColor.WHITE}${target.name}${ChatColor.GRAY}.")
+    }
+
+    /**
+     * Joins the name words and translates &-color codes. Empty if no name was given,
+     * null (after telling the player why) if it is too long.
+     */
+    private fun parseName(p: Player, words: List<String>): String? {
+        val name = ChatColor.translateAlternateColorCodes('&', words.joinToString(" ").trim())
+        val visible = ChatColor.stripColor(name)!!.trim()
+        if (name.isNotEmpty() && visible.isEmpty()) {
+            p.sendMessage("${PREFIX}The shop name needs some actual text.")
+            return null
+        }
+        if (visible.length > MAX_NAME_LENGTH) {
+            p.sendMessage("${PREFIX}Shop names can be at most $MAX_NAME_LENGTH characters.")
+            return null
+        }
+        return name
     }
 
     private fun requireAdmin(p: Player): Boolean {
@@ -189,8 +220,9 @@ class ShopCommand(
 
     private companion object {
         const val MAX_QUANTITY = 27 * 64
+        const val MAX_NAME_LENGTH = 32
         const val ADMIN = "diamondecon.admin"
-        val SUBCOMMANDS = listOf("create", "remove", "price", "list", "help")
+        val SUBCOMMANDS = listOf("create", "remove", "price", "name", "list", "help")
         val ADMIN_SUBCOMMANDS = listOf("setowner", "reload")
     }
 }

@@ -32,7 +32,10 @@ object Transactions : LongIdTable("transactions") {
     val fromUuid = javaUUID("from_uuid").references(Accounts.uuid).nullable()
     val toUuid = javaUUID("to_uuid").references(Accounts.uuid).nullable()
     val amount = long("amount").check { it greater 0L }
+    /** Material name of the item bought. */
     val item = text("item").nullable()
+    /** The shop's name as the buyer saw it (custom name or item name, may contain § color codes). */
+    val itemName = text("item_name").nullable()
     val itemAmount = integer("item_amount").nullable()
     // No foreign key: removing a shop keeps its sales in the ledger.
     val shopId = long("shop_id").nullable()
@@ -54,6 +57,8 @@ object Shops : LongIdTable("shops") {
     val item = text("item")
     /** Material name, for the dashboard. */
     val itemType = text("item_type").index()
+    /** Optional name chosen by the owner (may contain § color codes); null means "use the item's name". */
+    val displayName = text("display_name").nullable()
     val quantity = integer("quantity").check { it greater 0 }
     val price = long("price").check { it greater 0L }
     val stock = integer("stock").default(0)

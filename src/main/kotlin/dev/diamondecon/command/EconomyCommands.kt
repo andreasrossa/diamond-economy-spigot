@@ -196,7 +196,9 @@ class EconomyCommands(private val plugin: JavaPlugin, private val bank: Bank) : 
             Bank.TxType.WITHDRAW -> "withdrew"
             Bank.TxType.PAY -> if (incoming) "from $other" else "to $other"
             Bank.TxType.SHOP_PURCHASE ->
-                (if (incoming) "sold " else "bought ") + "${t.itemAmount}× ${materialName(t.item ?: "")}" +
+                // Older rows have no item name; fall back to the material.
+                (if (incoming) "sold " else "bought ") +
+                    "${t.itemAmount}× ${t.itemName ?: materialName(t.item ?: "")}${ChatColor.GRAY}" +
                     (if (incoming) " to " else " from ") + other
         }
     }

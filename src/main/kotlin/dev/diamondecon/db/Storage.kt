@@ -32,7 +32,12 @@ class Storage(config: ConfigurationSection) : AutoCloseable {
             // No silent retries on the main thread; callers report the failure instead.
             defaultMaxAttempts = 1
         }).also { db ->
-            transaction(db) { SchemaUtils.create(Accounts, Transactions, Shops) }
+            transaction(db) {
+                SchemaUtils.create(Accounts, Transactions, Shops)
+                // create() skips existing tables, so add columns introduced after the first boot.
+                exec("ALTER TABLE shops ADD COLUMN IF NOT EXISTS display_name text")
+                exec("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS item_name text")
+            }
         }
     } catch (e: Exception) {
         dataSource.close()

@@ -43,7 +43,7 @@ class Bank(private val db: Database) {
     data class Txn(
         val createdAt: Long, val type: TxType,
         val from: UUID?, val fromName: String?, val to: UUID?, val toName: String?,
-        val amount: Long, val item: String?, val itemAmount: Int,
+        val amount: Long, val item: String?, val itemName: String?, val itemAmount: Int,
     )
 
     data class Stats(
@@ -91,11 +91,11 @@ class Bank(private val db: Database) {
     /** @return false if the sender's balance is too low */
     fun transfer(
         from: UUID, to: UUID, amount: Long, type: TxType,
-        item: String? = null, itemAmount: Int? = null, shopId: Long? = null,
+        item: String? = null, itemName: String? = null, itemAmount: Int? = null, shopId: Long? = null,
     ): Boolean = atomically {
         if (!debit(from, amount)) return@atomically false
         credit(to, amount)
-        log(type, from, to, amount, item, itemAmount, shopId)
+        log(type, from, to, amount, item, itemName, itemAmount, shopId)
         true
     }
 
@@ -114,7 +114,8 @@ class Bank(private val db: Database) {
                     row[Transactions.createdAt].toInstant().toEpochMilli(), row[Transactions.type],
                     row[Transactions.fromUuid], row.getOrNull(f[Accounts.name]),
                     row[Transactions.toUuid], row.getOrNull(r[Accounts.name]),
-                    row[Transactions.amount], row[Transactions.item], row[Transactions.itemAmount] ?: 0,
+                    row[Transactions.amount], row[Transactions.item], row[Transactions.itemName],
+                    row[Transactions.itemAmount] ?: 0,
                 )
             }
     }
@@ -155,7 +156,7 @@ class Bank(private val db: Database) {
 
     private fun log(
         type: TxType, from: UUID?, to: UUID?, amount: Long,
-        item: String? = null, itemAmount: Int? = null, shopId: Long? = null,
+        item: String? = null, itemName: String? = null, itemAmount: Int? = null, shopId: Long? = null,
     ) {
         Transactions.insert {
             it[Transactions.type] = type
@@ -163,6 +164,7 @@ class Bank(private val db: Database) {
             it[toUuid] = to
             it[Transactions.amount] = amount
             it[Transactions.item] = item
+            it[Transactions.itemName] = itemName
             it[Transactions.itemAmount] = itemAmount
             it[Transactions.shopId] = shopId
         }
