@@ -1,9 +1,11 @@
 plugins {
-    java
+    kotlin("jvm") version "2.4.21"
 }
 
 group = "dev.diamondecon"
 version = "0.1.0"
+
+val kotlinVersion = "2.4.21"
 
 repositories {
     mavenCentral()
@@ -12,14 +14,16 @@ repositories {
 
 dependencies {
     compileOnly("org.spigotmc:spigot-api:26.3-R0.1-SNAPSHOT")
+    // Downloaded by Spigot at startup via plugin.yml `libraries`, so not bundled into the jar.
+    compileOnly(kotlin("stdlib"))
 }
 
-java {
-    toolchain.languageVersion = JavaLanguageVersion.of(25)
+kotlin {
+    jvmToolchain(25)
 }
 
 tasks.processResources {
     filesMatching("plugin.yml") {
-        expand("version" to project.version)
+        expand("version" to project.version, "kotlinVersion" to kotlinVersion)
     }
 }

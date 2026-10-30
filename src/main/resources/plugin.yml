@@ -4,6 +4,9 @@ main: dev.diamondecon.DiamondEcon
 api-version: '26.3'
 description: A tiny diamond-backed economy with chest shops.
 
+libraries:
+  - org.jetbrains.kotlin:kotlin-stdlib:${kotlinVersion}
+
 commands:
   balance:
     description: Show your diamond balance.
