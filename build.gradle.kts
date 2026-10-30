@@ -3,7 +3,7 @@ plugins {
 }
 
 group = "dev.diamondecon"
-version = "1.0.0"
+version = "1.0.1"
 
 val kotlinVersion = "2.4.21"
 val postgresVersion = "42.7.14"
