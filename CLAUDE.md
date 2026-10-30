@@ -101,8 +101,10 @@ Its CI applies this repo's migrations and fails when its generated types fall be
   Purchases haven't been tested in-game yet.
 - Local test server: `~/mc`. To install while it's running, put the jar in `~/mc/plugins/update/`
   (Bukkit's update folder). It replaces the plugin jar on the next restart.
-- `config.yml` supports `ssl-mode` (Neon needs `require`) and `min-idle` / `idle-timeout-seconds`, so a hosted
-  database can pause while the server is quiet (`min-idle: 0`).
+- `config.yml` takes either a connection string in `url` (e.g. Neon's `DATABASE_URL_UNPOOLED`; libpq's
+  `channel_binding` is mapped to pgjdbc's `channelBinding`) or `host`/`port`/`name`/`user`/`password`. It also has
+  `ssl-mode` (Neon needs `require`) and `min-idle` / `idle-timeout-seconds`, so a hosted database can pause while
+  the server is quiet (`min-idle: 0`).
 - Hikari `connectionTimeout` is 5s and Exposed retries are off (`defaultMaxAttempts = 1`). During an outage,
   each queued job fails after ~5s and the player gets an error; the server itself doesn't stall.
 - Known gap: `shops.owner_name` isn't updated when a shop owner renames their Minecraft account.

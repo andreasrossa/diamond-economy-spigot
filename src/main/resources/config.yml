@@ -1,9 +1,12 @@
 # Postgres connection. The defaults match docker-compose.yml.
 #
-# For Neon (the Vercel integration): use the *direct* (non-pooled) host, the database's owner role,
-# and ssl-mode: require. To let Neon pause while the server is quiet, set min-idle: 0 and a short
-# idle-timeout-seconds (e.g. 60); the first query after a pause takes a moment longer.
+# For Neon (the Vercel integration): paste DATABASE_URL_UNPOOLED (the direct, non-pooled connection
+# string of the database's owner role) into `url`; host, port, name, user and password are then ignored.
+# To let Neon pause while the server is quiet, set min-idle: 0 and a short idle-timeout-seconds (e.g. 60);
+# the first query after a pause takes a moment longer.
 database:
+  # A connection string, e.g. postgresql://user:password@host/db?sslmode=require. Empty: use the keys below.
+  url: ''
   host: localhost
   port: 5432
   name: diamondecon
