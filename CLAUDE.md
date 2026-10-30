@@ -24,7 +24,8 @@ It will read the plugin's database directly, so treat the schema as a public int
 | File | Role |
 |---|---|
 | `DiamondEcon.kt` | Plugin entry point. Wires everything together and registers commands and listeners |
-| `db/Storage.kt` | HikariCP pool to Postgres (settings in `config.yml`), Exposed `Database`, `SchemaUtils.create` on startup |
+| `db/Storage.kt` | HikariCP pool to Postgres (settings in `config.yml`), Exposed `Database`, runs migrations on startup |
+| `db/Migrations.kt` | Versioned migration runner (`schema_version` table) over `src/main/resources/db/migrations/*.sql` |
 | `db/Tables.kt` | Exposed DSL tables `Accounts`, `Transactions`, `Shops` (the dashboard's schema) |
 | `bank/Bank.kt` | Accounts, atomic debit/credit/transfer, ledger writes, history/stats queries |
 | `shop/ShopManager.kt` | In-memory shop cache, shop persistence, floating display entities (spinning item + label) |
@@ -51,12 +52,19 @@ It will read the plugin's database directly, so treat the schema as a public int
   name in labels and messages, e.g. for a shulker box full of dirt. Purchases record the name the buyer saw in
   `transactions.item_name` (null on older rows). An optional `icon` (YAML `ItemStack`) replaces the floating item.
   It's cosmetic only: matching and purchases always use `item`.
-- Columns added after the first boot need an `ADD COLUMN IF NOT EXISTS` in `Storage`, since `SchemaUtils.create`
-  skips existing tables.
 - **Decorations** (`ItemDisplay` + `TextDisplay`) are **non-persistent**. They spawn on chunk load,
   are removed on chunk unload and plugin disable, and are never saved to the world.
 - `shops.stock` is kept up to date (on purchase, owner closing the chest, chunk load) so the dashboard can
   look up stock without the server running.
+- **Schema changes go through migrations.** The plugin owns the schema, and the dashboard only reads it.
+  If the dashboard uses Prisma or Drizzle, generate its models from the database (`prisma db pull`) and don't
+  use their migration tools. To change the schema:
+  1. Add `NNN_description.sql` to `src/main/resources/db/migrations/`, list it in `Migrations.SCRIPTS`, and update
+     `Tables.kt` to match, keeping Exposed's index and constraint names.
+  2. Never edit a migration that has shipped. Migrations only go forward, so take a backup with `pg_dump` before
+     deploying one.
+  3. On startup, the plugin logs a warning if the database and `Tables.kt` disagree
+     (`SchemaUtils.statementsRequiredToActualizeScheme`). That warning usually means a migration is missing.
 - There is no Vault integration, on purpose: the economy is self-contained.
 - Messages use `ChatColor` legacy strings. `◆` is the diamond symbol, and the tone is cute (✿, ♥).
 

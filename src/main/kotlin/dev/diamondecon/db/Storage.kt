@@ -5,14 +5,13 @@ import com.zaxxer.hikari.HikariDataSource
 import org.bukkit.configuration.ConfigurationSection
 import org.jetbrains.exposed.v1.core.DatabaseConfig
 import org.jetbrains.exposed.v1.jdbc.Database
-import org.jetbrains.exposed.v1.jdbc.SchemaUtils
-import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import java.util.logging.Logger
 
 /**
- * Postgres connection pool plus the Exposed [Database] on top of it. Creates missing tables on startup.
+ * Postgres connection pool plus the Exposed [Database] on top of it. Applies pending [Migrations] on startup.
  * Settings come from the `database` section of config.yml.
  */
-class Storage(config: ConfigurationSection) : AutoCloseable {
+class Storage(config: ConfigurationSection, logger: Logger) : AutoCloseable {
 
     private val dataSource = HikariDataSource(HikariConfig().apply {
         poolName = "DiamondEcon"
@@ -31,15 +30,7 @@ class Storage(config: ConfigurationSection) : AutoCloseable {
         Database.connect(dataSource, databaseConfig = DatabaseConfig {
             // No silent retries on the main thread; callers report the failure instead.
             defaultMaxAttempts = 1
-        }).also { db ->
-            transaction(db) {
-                SchemaUtils.create(Accounts, Transactions, Shops)
-                // create() skips existing tables, so add columns introduced after the first boot.
-                exec("ALTER TABLE shops ADD COLUMN IF NOT EXISTS display_name text")
-                exec("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS item_name text")
-                exec("ALTER TABLE shops ADD COLUMN IF NOT EXISTS icon text")
-            }
-        }
+        }).also { db -> Migrations.run(db, logger) }
     } catch (e: Exception) {
         dataSource.close()
         throw e

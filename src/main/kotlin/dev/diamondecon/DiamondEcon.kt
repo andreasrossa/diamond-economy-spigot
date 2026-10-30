@@ -22,9 +22,9 @@ class DiamondEcon : JavaPlugin() {
         val storage: Storage
         val shops: ShopManager
         try {
-            storage = Storage(config.getConfigurationSection("database") ?: config.createSection("database"))
+            storage = Storage(config.getConfigurationSection("database") ?: config.createSection("database"), logger)
         } catch (e: Exception) {
-            logger.log(Level.SEVERE, "Could not connect to the database, disabling", e)
+            logger.log(Level.SEVERE, "Could not connect to or set up the database, disabling", e)
             server.pluginManager.disablePlugin(this)
             return
         }
