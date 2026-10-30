@@ -6,6 +6,7 @@ description: A tiny diamond-backed economy with chest shops.
 
 libraries:
   - org.jetbrains.kotlin:kotlin-stdlib:${kotlinVersion}
+  - org.postgresql:postgresql:${postgresVersion}
 
 commands:
   balance:
