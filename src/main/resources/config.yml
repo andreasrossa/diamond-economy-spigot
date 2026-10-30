@@ -1,8 +1,18 @@
 # Postgres connection. The defaults match docker-compose.yml.
+#
+# For Neon (the Vercel integration): use the *direct* (non-pooled) host, the database's owner role,
+# and ssl-mode: require. To let Neon pause while the server is quiet, set min-idle: 0 and a short
+# idle-timeout-seconds (e.g. 60); the first query after a pause takes a moment longer.
 database:
   host: localhost
   port: 5432
   name: diamondecon
   user: diamondecon
   password: diamondecon
+  # disable, allow, prefer, require, verify-ca or verify-full. Empty: the driver's default (prefer).
+  ssl-mode: ''
   pool-size: 4
+  # Connections kept open while idle. Defaults to pool-size.
+  min-idle: 4
+  # How long an idle connection above min-idle stays open (at least 10).
+  idle-timeout-seconds: 600

@@ -3,8 +3,9 @@
 A small Spigot economy plugin for a private Minecraft server. Diamonds are the currency.
 Features: a bank, `/pay`, transaction stats/history, and decorated chest shops.
 
-A Next.js dashboard (stock lookup, balance graphs) comes later and is **not** in this repo yet.
-It will read the plugin's database directly, so treat the schema as a public interface.
+The web dashboard lives in its own repo, `~/dev/mc/diamond-econ-dashboard` (Next.js, Drizzle, Neon on Vercel).
+It reads the plugin's database directly as a read-only role, so treat the schema as a public interface.
+Its CI applies this repo's migrations and fails when its generated types fall behind.
 
 ## Stack
 
@@ -75,14 +76,15 @@ It will read the plugin's database directly, so treat the schema as a public int
 - `shops.stock` is kept up to date (on purchase, owner closing the chest, chunk load) so the dashboard can
   look up stock without the server running.
 - **Schema changes go through migrations.** The plugin owns the schema, and the dashboard only reads it.
-  If the dashboard uses Prisma or Drizzle, generate its models from the database (`prisma db pull`) and don't
-  use their migration tools. To change the schema:
+  The dashboard generates its Drizzle types with `npm run db:pull` and keeps its own tables in a `dashboard`
+  schema. To change the schema:
   1. Add `NNN_description.sql` to `src/main/resources/db/migrations/`, list it in `Migrations.SCRIPTS`, and update
      `Tables.kt` to match, keeping Exposed's index and constraint names.
   2. Never edit a migration that has shipped. Migrations only go forward, so take a backup with `pg_dump` before
      deploying one.
   3. On startup, the plugin logs a warning if the database and `Tables.kt` disagree
      (`SchemaUtils.statementsRequiredToActualizeScheme`). That warning usually means a migration is missing.
+  4. Then run `npm run db:pull` in the dashboard repo and commit the regenerated types.
 - There is no Vault integration, on purpose: the economy is self-contained.
 - Messages use `ChatColor` legacy strings. `◆` is the diamond symbol, and the tone is cute (✿, ♥).
 
@@ -99,6 +101,8 @@ It will read the plugin's database directly, so treat the schema as a public int
   Purchases haven't been tested in-game yet.
 - Local test server: `~/mc`. To install while it's running, put the jar in `~/mc/plugins/update/`
   (Bukkit's update folder). It replaces the plugin jar on the next restart.
+- `config.yml` supports `ssl-mode` (Neon needs `require`) and `min-idle` / `idle-timeout-seconds`, so a hosted
+  database can pause while the server is quiet (`min-idle: 0`).
 - Hikari `connectionTimeout` is 5s and Exposed retries are off (`defaultMaxAttempts = 1`). During an outage,
   each queued job fails after ~5s and the player gets an error; the server itself doesn't stall.
 - Known gap: `shops.owner_name` isn't updated when a shop owner renames their Minecraft account.
