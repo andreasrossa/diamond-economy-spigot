@@ -1,0 +1,37 @@
+name: DiamondEcon
+version: '${version}'
+main: dev.diamondecon.DiamondEcon
+api-version: '26.3'
+description: A tiny diamond-backed economy with chest shops.
+
+commands:
+  balance:
+    description: Show your diamond balance.
+    usage: /balance [player]
+    aliases: [bal, money]
+  deposit:
+    description: Deposit diamonds from your inventory into the bank.
+    usage: /deposit [amount|all]
+  withdraw:
+    description: Withdraw diamonds from the bank into your inventory.
+    usage: /withdraw <amount|all>
+  pay:
+    description: Send diamonds to another player.
+    usage: /pay <player> <amount>
+  history:
+    description: Show your recent transactions.
+    usage: /history [page]
+  stats:
+    description: Show where your diamonds came from and went.
+    usage: /stats
+  baltop:
+    description: Show the richest players.
+    usage: /baltop
+  shop:
+    description: Create and manage chest shops.
+    usage: /shop <create|remove|price|list|help>
+
+permissions:
+  diamondecon.admin:
+    description: View others' balances and remove any shop.
+    default: op
