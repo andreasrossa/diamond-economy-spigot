@@ -31,7 +31,7 @@ It will read the plugin's database directly, so treat the schema as a public int
 | `shop/ShopListener.kt` | Buying (right-click), info (left-click), protection (break/explode/hopper/double-chest) |
 | `shop/Shop.kt`, `shop/BlockKey.kt` | Shop model and world+xyz key |
 | `command/EconomyCommands.kt` | `/balance /deposit /withdraw /pay /history /stats /baltop`, account creation on join |
-| `command/ShopCommand.kt` | `/shop create|remove|price|list|help` |
+| `command/ShopCommand.kt` | `/shop create|remove|price|list|help`, admin `/shop setowner|reload` |
 | `util/Items.kt`, `util/Fmt.kt` | Inventory helpers (`countItems`, `roomFor`, `takeItems`, `giveItems`) and chat formatting |
 
 ## Design rules (keep these)

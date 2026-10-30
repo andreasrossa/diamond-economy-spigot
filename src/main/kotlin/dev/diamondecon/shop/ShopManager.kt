@@ -43,23 +43,42 @@ class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
     val all: Collection<Shop> get() = shops.values
 
     fun load() {
-        val loaded = transaction(db) {
-            Shops.selectAll().mapNotNull { row ->
-                val id = row[Shops.id].value
-                val item = deserialize(row[Shops.item])
-                if (item == null) {
-                    plugin.logger.warning("Skipping shop #$id: its item could not be loaded")
-                    return@mapNotNull null
-                }
-                val key = BlockKey(row[Shops.world], row[Shops.x], row[Shops.y], row[Shops.z])
-                Shop(
-                    id, row[Shops.ownerUuid], row[Shops.ownerName], key, item,
-                    row[Shops.quantity], row[Shops.price], row[Shops.stock],
-                )
-            }
-        }
-        loaded.associateByTo(shops) { it.key }
+        read().associateByTo(shops) { it.key }
         plugin.logger.info("Loaded ${shops.size} shops")
+    }
+
+    /**
+     * Replaces the cache with what is in the database, e.g. after editing shops by hand.
+     * If reading fails, this throws and the old cache stays in place.
+     * @return the number of shops loaded
+     */
+    fun reload(): Int {
+        val loaded = read()
+        shops.values.forEach(::despawnDecor)
+        shops.clear()
+        loaded.associateByTo(shops) { it.key }
+        for (shop in shops.values.filter { isLoaded(it.key) }) {
+            spawnDecor(shop)
+            refresh(shop)
+        }
+        plugin.logger.info("Reloaded ${shops.size} shops")
+        return shops.size
+    }
+
+    private fun read(): List<Shop> = transaction(db) {
+        Shops.selectAll().mapNotNull { row ->
+            val id = row[Shops.id].value
+            val item = deserialize(row[Shops.item])
+            if (item == null) {
+                plugin.logger.warning("Skipping shop #$id: its item could not be loaded")
+                return@mapNotNull null
+            }
+            val key = BlockKey(row[Shops.world], row[Shops.x], row[Shops.y], row[Shops.z])
+            Shop(
+                id, row[Shops.ownerUuid], row[Shops.ownerName], key, item,
+                row[Shops.quantity], row[Shops.price], row[Shops.stock],
+            )
+        }
     }
 
     /** Spawns decorations for already-loaded chunks and starts the spin animation. */
@@ -116,6 +135,18 @@ class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
     fun setPrice(shop: Shop, price: Long) {
         transaction(db) { Shops.update({ Shops.id eq shop.id }) { it[Shops.price] = price } }
         shop.price = price
+        updateLabel(shop)
+    }
+
+    fun setOwner(shop: Shop, owner: UUID, ownerName: String) {
+        transaction(db) {
+            Shops.update({ Shops.id eq shop.id }) {
+                it[ownerUuid] = owner
+                it[Shops.ownerName] = ownerName
+            }
+        }
+        shop.owner = owner
+        shop.ownerName = ownerName
         updateLabel(shop)
     }
 

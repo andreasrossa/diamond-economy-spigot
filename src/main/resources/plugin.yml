@@ -37,9 +37,9 @@ commands:
     usage: /baltop
   shop:
     description: Create and manage chest shops.
-    usage: /shop <create|remove|price|list|help>
+    usage: /shop <create|remove|price|list|setowner|reload|help>
 
 permissions:
   diamondecon.admin:
-    description: View others' balances and remove any shop.
+    description: View others' balances, manage any shop, change shop owners and reload shops.
     default: op

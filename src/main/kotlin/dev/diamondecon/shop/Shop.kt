@@ -8,14 +8,18 @@ import java.util.UUID
 /** A chest/barrel that sells [quantity] of [item] for [price] diamonds. */
 class Shop(
     val id: Long,
-    val owner: UUID,
-    val ownerName: String,
+    owner: UUID,
+    ownerName: String,
     val key: BlockKey,
     val item: ItemStack,
     val quantity: Int,
     price: Long,
     stock: Int,
 ) {
+    var owner = owner
+        internal set
+    var ownerName = ownerName
+        internal set
     var price = price
         internal set
     var stock = stock

@@ -43,7 +43,7 @@ class DiamondEcon : JavaPlugin() {
         for (name in listOf("balance", "deposit", "withdraw", "pay", "history", "stats", "baltop")) {
             register(name, economy, economy)
         }
-        val shopCommand = ShopCommand(this, shops)
+        val shopCommand = ShopCommand(this, shops, bank)
         register("shop", shopCommand, shopCommand)
 
         server.pluginManager.registerEvents(economy, this)
