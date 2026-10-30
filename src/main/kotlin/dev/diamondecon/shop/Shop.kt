@@ -21,6 +21,13 @@ class Shop(
     /** Custom name set by the owner, or null. */
     var name = name
         internal set
+    /** Item shown floating above the shop instead of [item], or null. Cosmetic only; purchases always use [item]. */
+    var icon: ItemStack? = null
+        internal set
+
+    /** The item floating above the shop. */
+    val displayIcon: ItemStack get() = icon ?: item
+
     /** What players see: the custom name if there is one, otherwise the item's own name. */
     val displayName: String get() = name ?: item.prettyName
 

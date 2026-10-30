@@ -31,7 +31,7 @@ It will read the plugin's database directly, so treat the schema as a public int
 | `shop/ShopListener.kt` | Buying (right-click), info (left-click), protection (break/explode/hopper/double-chest) |
 | `shop/Shop.kt`, `shop/BlockKey.kt` | Shop model and world+xyz key |
 | `command/EconomyCommands.kt` | `/balance /deposit /withdraw /pay /history /stats /baltop`, account creation on join |
-| `command/ShopCommand.kt` | `/shop create|remove|price|name|list|help`, admin `/shop setowner|reload` |
+| `command/ShopCommand.kt` | `/shop create|remove|price|name|icon|list|help`, admin `/shop setowner|reload` |
 | `util/Items.kt`, `util/Fmt.kt` | Inventory helpers (`countItems`, `roomFor`, `takeItems`, `giveItems`) and chat formatting |
 
 ## Design rules (keep these)
@@ -49,7 +49,8 @@ It will read the plugin's database directly, so treat the schema as a public int
   with `ItemStack.isSimilar`. The shop's item is stored as YAML-serialized `ItemStack`, plus `item_type`
   (Material name) for the dashboard. An optional owner-chosen `display_name` (with § colors) replaces the item's
   name in labels and messages, e.g. for a shulker box full of dirt. Purchases record the name the buyer saw in
-  `transactions.item_name` (null on older rows).
+  `transactions.item_name` (null on older rows). An optional `icon` (YAML `ItemStack`) replaces the floating item.
+  It's cosmetic only: matching and purchases always use `item`.
 - Columns added after the first boot need an `ADD COLUMN IF NOT EXISTS` in `Storage`, since `SchemaUtils.create`
   skips existing tables.
 - **Decorations** (`ItemDisplay` + `TextDisplay`) are **non-persistent**. They spawn on chunk load,

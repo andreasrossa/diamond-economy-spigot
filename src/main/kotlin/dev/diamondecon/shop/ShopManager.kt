@@ -76,7 +76,13 @@ class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
             Shop(
                 id, row[Shops.ownerUuid], row[Shops.ownerName], key, item, row[Shops.displayName],
                 row[Shops.quantity], row[Shops.price], row[Shops.stock],
-            )
+            ).apply {
+                val iconData = row[Shops.icon]
+                if (iconData != null) {
+                    icon = deserialize(iconData)
+                    if (icon == null) plugin.logger.warning("Shop #$id: its icon could not be loaded, showing its item")
+                }
+            }
         }
     }
 
@@ -142,6 +148,14 @@ class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
         transaction(db) { Shops.update({ Shops.id eq shop.id }) { it[displayName] = name } }
         shop.name = name
         updateLabel(shop)
+    }
+
+    /** Sets the floating icon to a copy of [icon], or back to the shop's item if null. */
+    fun setIcon(shop: Shop, icon: ItemStack?) {
+        val proto = icon?.clone()?.apply { amount = 1 }
+        transaction(db) { Shops.update({ Shops.id eq shop.id }) { it[Shops.icon] = proto?.let(::serialize) } }
+        shop.icon = proto
+        shop.itemDisplay?.takeIf { it.isValid }?.setItemStack(shop.displayIcon)
     }
 
     fun setOwner(shop: Shop, owner: UUID, ownerName: String) {
@@ -210,7 +224,7 @@ class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
 
         shop.itemDisplay = world.spawn(base.clone().add(0.0, 1.35, 0.0), ItemDisplay::class.java) { d ->
             d.isPersistent = false
-            d.setItemStack(shop.item)
+            d.setItemStack(shop.displayIcon)
             d.brightness = Display.Brightness(15, 15)
             d.transformation = spinTransform(shop.angle)
         }

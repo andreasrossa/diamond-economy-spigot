@@ -59,6 +59,8 @@ object Shops : LongIdTable("shops") {
     val itemType = text("item_type").index()
     /** Optional name chosen by the owner (may contain § color codes); null means "use the item's name". */
     val displayName = text("display_name").nullable()
+    /** YAML-serialized ItemStack shown floating above the shop instead of [item]; null means [item]. Cosmetic only. */
+    val icon = text("icon").nullable()
     val quantity = integer("quantity").check { it greater 0 }
     val price = long("price").check { it greater 0L }
     val stock = integer("stock").default(0)

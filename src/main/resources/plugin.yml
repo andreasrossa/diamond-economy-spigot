@@ -37,7 +37,7 @@ commands:
     usage: /baltop
   shop:
     description: Create and manage chest shops.
-    usage: /shop <create|remove|price|name|list|setowner|reload|help>
+    usage: /shop <create|remove|price|name|icon|list|setowner|reload|help>
 
 permissions:
   diamondecon.admin:

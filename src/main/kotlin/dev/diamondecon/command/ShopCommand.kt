@@ -6,6 +6,7 @@ import dev.diamondecon.shop.Shop
 import dev.diamondecon.shop.ShopManager
 import dev.diamondecon.util.PREFIX
 import dev.diamondecon.util.dia
+import dev.diamondecon.util.prettyName
 import org.bukkit.ChatColor
 import org.bukkit.block.data.type.Chest
 import org.bukkit.command.Command
@@ -17,7 +18,7 @@ import org.bukkit.plugin.java.JavaPlugin
 import java.sql.SQLException
 import java.util.logging.Level
 
-/** /shop create|remove|price|name|list, plus admin-only reload|setowner */
+/** /shop create|remove|price|name|icon|list, plus admin-only reload|setowner */
 class ShopCommand(
     private val plugin: JavaPlugin,
     private val shops: ShopManager,
@@ -35,6 +36,7 @@ class ShopCommand(
                 "remove" -> remove(sender)
                 "price" -> price(sender, args)
                 "name" -> name(sender, args)
+                "icon" -> icon(sender, args)
                 "list" -> list(sender)
                 "reload" -> if (requireAdmin(sender)) reload(sender)
                 "setowner" -> if (requireAdmin(sender)) setOwner(sender, args)
@@ -56,6 +58,7 @@ class ShopCommand(
         p.sendMessage("$g    The optional name is shown instead of the item's (e.g. Shulker of Dirt). &-colors work.")
         p.sendMessage("$w  /shop price <price>$g change the price of the shop you look at")
         p.sendMessage("$w  /shop name [name]$g rename the shop you look at (no name: use the item's)")
+        p.sendMessage("$w  /shop icon$g show the item you hold above the shop you look at ($w/shop icon reset$g to undo)")
         p.sendMessage("$w  /shop remove$g close the shop you look at")
         p.sendMessage("$w  /shop list$g list your shops")
         p.sendMessage("$g  Customers right-click to buy. Money goes straight to your bank.")
@@ -129,6 +132,22 @@ class ShopCommand(
             if (name.isEmpty()) "${PREFIX}Name cleared, the shop shows ${ChatColor.WHITE}${shop.displayName}${ChatColor.GRAY} again."
             else "${PREFIX}Shop renamed to ${ChatColor.WHITE}${shop.displayName}${ChatColor.GRAY}."
         )
+    }
+
+    private fun icon(p: Player, args: Array<String>) {
+        val shop = lookedAt(p) ?: return
+        if (args.getOrNull(1).equals("reset", ignoreCase = true)) {
+            shops.setIcon(shop, null)
+            p.sendMessage("${PREFIX}The shop shows its item again.")
+            return
+        }
+        val hand = p.inventory.itemInMainHand
+        if (hand.type.isAir) {
+            p.sendMessage("${PREFIX}Hold the item the shop should show, or use /shop icon reset.")
+            return
+        }
+        shops.setIcon(shop, hand)
+        p.sendMessage("${PREFIX}The shop now shows ${ChatColor.WHITE}${hand.prettyName}${ChatColor.GRAY}. Customers still get the real item ♥")
     }
 
     private fun list(p: Player) {
@@ -214,6 +233,7 @@ class ShopCommand(
             args.size == 1 -> (if (admin) SUBCOMMANDS + ADMIN_SUBCOMMANDS else SUBCOMMANDS)
                 .filter { it.startsWith(args[0].lowercase()) }
             args.size == 2 && admin && args[0].equals("setowner", ignoreCase = true) -> null // online player names
+            args.size == 2 && args[0].equals("icon", ignoreCase = true) -> listOf("reset").filter { it.startsWith(args[1].lowercase()) }
             else -> emptyList()
         }
     }
@@ -222,7 +242,7 @@ class ShopCommand(
         const val MAX_QUANTITY = 27 * 64
         const val MAX_NAME_LENGTH = 32
         const val ADMIN = "diamondecon.admin"
-        val SUBCOMMANDS = listOf("create", "remove", "price", "name", "list", "help")
+        val SUBCOMMANDS = listOf("create", "remove", "price", "name", "icon", "list", "help")
         val ADMIN_SUBCOMMANDS = listOf("setowner", "reload")
     }
 }

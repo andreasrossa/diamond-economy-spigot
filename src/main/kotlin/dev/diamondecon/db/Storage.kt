@@ -37,6 +37,7 @@ class Storage(config: ConfigurationSection) : AutoCloseable {
                 // create() skips existing tables, so add columns introduced after the first boot.
                 exec("ALTER TABLE shops ADD COLUMN IF NOT EXISTS display_name text")
                 exec("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS item_name text")
+                exec("ALTER TABLE shops ADD COLUMN IF NOT EXISTS icon text")
             }
         }
     } catch (e: Exception) {
