@@ -19,6 +19,10 @@ It will read the plugin's database directly, so treat the schema as a public int
   `libraries:` in `src/main/resources/plugin.yml`, and Spigot downloads them from Maven Central at startup.
   Their versions live once in `build.gradle.kts` and are expanded into `plugin.yml` by `processResources`.
   Add new runtime dependencies the same way: `compileOnly` in Gradle + an entry in `libraries:`.
+- **CI** (`.github/workflows/build.yml`) builds and tests every push to `master` and every PR, keeping the jar as a
+  workflow artifact. **To release:** set `version` in `build.gradle.kts`, commit, then push a tag `v<version>`
+  (e.g. `v0.2.0`). CI fails if the tag and the version differ, otherwise it publishes the jar as a GitHub release.
+  A tag with a hyphen (`v0.2.0-rc1`) becomes a pre-release. CI gets its Java and Gradle versions from `mise.toml`.
 - `docker-compose.yml` runs a local `postgres:16` (database/user/password `diamondecon`, bound to localhost:5432).
   The Claude session may not have Docker socket permissions. If so, ask the user to run compose commands.
 
