@@ -10,8 +10,11 @@ It will read the plugin's database directly, so treat the schema as a public int
 
 - **Spigot 26.3** (`org.spigotmc:spigot-api:26.3-R0.1-SNAPSHOT`). Spigot, not Paper: use only the Spigot API.
 - **Kotlin 2.4.21** on **Java 25**, built with Gradle 9.8.2 (Kotlin DSL)
-- Java and Gradle are pinned in `mise.toml`. Use `mise exec -- ./gradlew build`.
-  Output: `build/libs/diamond-econ-<version>.jar`.
+- Java and Gradle are pinned in `mise.toml`. Use `mise exec -- ./gradlew build` (this also runs the tests),
+  or `assemble` to get just the jar. Output: `build/libs/diamond-econ-<version>.jar`.
+- **Tests** (`src/test/kotlin`, JUnit 6 + Testcontainers 2): `BankTest` and `MigrationsTest` run against a real
+  `postgres:16` container, with a fresh database per test (`TestPostgres`), so Docker must be running.
+  The Claude Code sandbox can't reach the Docker socket, so ask the user to run `./gradlew test`.
 - Runtime dependencies (Kotlin stdlib, Postgres JDBC driver, Exposed core/jdbc/java-time, HikariCP) are **not shaded**. They're listed under
   `libraries:` in `src/main/resources/plugin.yml`, and Spigot downloads them from Maven Central at startup.
   Their versions live once in `build.gradle.kts` and are expanded into `plugin.yml` by `processResources`.

@@ -18,7 +18,7 @@ import java.util.logging.Logger
 object Migrations {
 
     /** Applied in order; a script's version is its position, starting at 1. */
-    private val SCRIPTS = listOf(
+    internal val SCRIPTS = listOf(
         "001_initial_schema.sql",
     )
 
