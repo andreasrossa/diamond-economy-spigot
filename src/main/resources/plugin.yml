@@ -7,6 +7,10 @@ description: A tiny diamond-backed economy with chest shops.
 libraries:
   - org.jetbrains.kotlin:kotlin-stdlib:${kotlinVersion}
   - org.postgresql:postgresql:${postgresVersion}
+  - org.jetbrains.exposed:exposed-core:${exposedVersion}
+  - org.jetbrains.exposed:exposed-jdbc:${exposedVersion}
+  - org.jetbrains.exposed:exposed-java-time:${exposedVersion}
+  - com.zaxxer:HikariCP:${hikariVersion}
 
 commands:
   balance:

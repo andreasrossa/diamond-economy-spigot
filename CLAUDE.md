@@ -12,7 +12,7 @@ It will read the plugin's database directly, so treat the schema as a public int
 - **Kotlin 2.4.21** on **Java 25**, built with Gradle 9.8.2 (Kotlin DSL)
 - Java and Gradle are pinned in `mise.toml`. Use `mise exec -- ./gradlew build`.
   Output: `build/libs/diamond-econ-<version>.jar`.
-- Runtime dependencies (the Kotlin stdlib, the Postgres JDBC driver) are **not shaded**. They're listed under
+- Runtime dependencies (Kotlin stdlib, Postgres JDBC driver, Exposed core/jdbc/java-time, HikariCP) are **not shaded**. They're listed under
   `libraries:` in `src/main/resources/plugin.yml`, and Spigot downloads them from Maven Central at startup.
   Their versions live once in `build.gradle.kts` and are expanded into `plugin.yml` by `processResources`.
   Add new runtime dependencies the same way: `compileOnly` in Gradle + an entry in `libraries:`.
@@ -24,7 +24,8 @@ It will read the plugin's database directly, so treat the schema as a public int
 | File | Role |
 |---|---|
 | `DiamondEcon.kt` | Plugin entry point. Wires everything together and registers commands and listeners |
-| `Database.kt` | SQLite connection and schema creation, plus JDBC helpers (`update`, `query`, `queryOne`, `insert`) |
+| `db/Storage.kt` | HikariCP pool to Postgres (settings in `config.yml`), Exposed `Database`, `SchemaUtils.create` on startup |
+| `db/Tables.kt` | Exposed DSL tables `Accounts`, `Transactions`, `Shops` (the dashboard's schema) |
 | `bank/Bank.kt` | Accounts, atomic debit/credit/transfer, ledger writes, history/stats queries |
 | `shop/ShopManager.kt` | In-memory shop cache, shop persistence, floating display entities (spinning item + label) |
 | `shop/ShopListener.kt` | Buying (right-click), info (left-click), protection (break/explode/hopper/double-chest) |
@@ -57,30 +58,21 @@ It will read the plugin's database directly, so treat the schema as a public int
 ## Current status
 
 - Committed: initial Java version → Kotlin rewrite → Postgres compose + driver.
-- **Never run on a real server yet.** Unverified assumptions to check on the first boot:
-  - The SQLite JDBC driver is assumed to be bundled with the Spigot server jar.
-  - `api-version: '26.3'` is assumed to be accepted by the server.
-  - Spigot is assumed to download the `libraries:` entries.
-- Storage is still **SQLite** (`plugins/DiamondEcon/economy.db`, WAL mode). The Postgres driver is on the
-  classpath but unused.
-- All database calls currently run synchronously on the main server thread. That's fine for SQLite, but
-  not for Postgres.
+- Storage is **Postgres via Exposed 1.6.0 (DSL) + HikariCP 7.1.0**. SQLite is gone. Native types: `uuid`, `bigint`,
+  `timestamptz` (`created_at`, defaulted by the DB), `type` as the enum name. Foreign keys go from `transactions.from_uuid/to_uuid`
+  and `shops.owner_uuid` to `accounts.uuid`. `transactions.shop_id` has no FK, so the ledger survives shop removal.
+- Exposed loads its `ServiceLoader` services with its own classloader (not the context classloader), so Spigot's
+  library loader should be fine. The Postgres driver class is set explicitly on Hikari.
+- **First boot on a real Spigot 26.3 server (2026-10-30) worked:** `api-version: '26.3'` is accepted, and Spigot
+  downloads the `libraries:` entries with their transitive deps. Hikari connects and the shops load.
+  Purchases haven't been tested in-game yet.
+- Local test server: `~/mc`. To install while it's running, put the jar in `~/mc/plugins/update/`
+  (Bukkit's update folder). It replaces the plugin jar on the next restart.
+- **All database calls still run synchronously on the main server thread.** Hikari `connectionTimeout` is 5s and
+  Exposed retries are off (`defaultMaxAttempts = 1`), so an outage stalls a tick for at most ~5s per call.
 
-## Next step (agreed direction, scope not yet confirmed)
+## Next step
 
-Move storage to **Postgres via JetBrains Exposed 1.6.0, DSL style** (not DAO), with **HikariCP 7.1.0**:
-
-1. Exposed `Table` objects (`Accounts`, `Transactions`, `Shops`) using native Postgres types
-   (`uuid`, `bigint`, `timestamptz` via `exposed-java-time`), created with `SchemaUtils.create`.
-   Add a `config.yml` for connection settings.
-2. Port `Bank` and `ShopManager` to the Exposed DSL, keeping the conditional-debit transfer.
-3. Move database work off the main thread (single executor), then hop back with the Bukkit scheduler
-   to touch the world or inventories. Shop purchases need care so items can't be duplicated:
-   reserve/validate, then pay, then move items with a re-check.
-4. Remove SQLite and `Database.kt`'s raw JDBC helpers.
-
-Open question for the user: all four steps at once, or Exposed first and the threading separately.
-Risks: Exposed discovers dialects through `ServiceLoader`, and drivers may need `Class.forName(...)`
-when loaded through Spigot's library classloader. Verify both on a real server.
-
-The SQLite → Postgres switch happens before launch, so no data migration is planned.
+Move database work off the main thread (single executor), then hop back with the Bukkit scheduler
+to touch the world or inventories. Shop purchases need care so items can't be duplicated:
+reserve/validate, then pay, then move items with a re-check. Revisit the retry/timeout settings in `Storage` then.

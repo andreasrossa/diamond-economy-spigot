@@ -7,6 +7,8 @@ version = "0.1.0"
 
 val kotlinVersion = "2.4.21"
 val postgresVersion = "42.7.14"
+val exposedVersion = "1.6.0"
+val hikariVersion = "7.1.0"
 
 repositories {
     mavenCentral()
@@ -18,6 +20,10 @@ dependencies {
     // Downloaded by Spigot at startup via plugin.yml `libraries`, so not bundled into the jar.
     compileOnly(kotlin("stdlib"))
     compileOnly("org.postgresql:postgresql:$postgresVersion")
+    compileOnly("org.jetbrains.exposed:exposed-core:$exposedVersion")
+    compileOnly("org.jetbrains.exposed:exposed-jdbc:$exposedVersion")
+    compileOnly("org.jetbrains.exposed:exposed-java-time:$exposedVersion")
+    compileOnly("com.zaxxer:HikariCP:$hikariVersion")
 }
 
 kotlin {
@@ -30,6 +36,8 @@ tasks.processResources {
             "version" to project.version,
             "kotlinVersion" to kotlinVersion,
             "postgresVersion" to postgresVersion,
+            "exposedVersion" to exposedVersion,
+            "hikariVersion" to hikariVersion,
         )
     }
 }

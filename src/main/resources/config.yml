@@ -1,0 +1,8 @@
+# Postgres connection. The defaults match docker-compose.yml.
+database:
+  host: localhost
+  port: 5432
+  name: diamondecon
+  user: diamondecon
+  password: diamondecon
+  pool-size: 4

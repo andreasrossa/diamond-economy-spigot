@@ -1,11 +1,32 @@
 package dev.diamondecon.bank
 
-import dev.diamondecon.getUuid
-import dev.diamondecon.query
-import dev.diamondecon.queryOne
-import dev.diamondecon.update
-import java.sql.Connection
-import java.sql.ResultSet
+import dev.diamondecon.db.Accounts
+import dev.diamondecon.db.Transactions
+import org.jetbrains.exposed.v1.core.JoinType
+import org.jetbrains.exposed.v1.core.LongColumnType
+import org.jetbrains.exposed.v1.core.Op
+import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.SortOrder
+import org.jetbrains.exposed.v1.core.Sum
+import org.jetbrains.exposed.v1.core.alias
+import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.case
+import org.jetbrains.exposed.v1.core.count
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.greater
+import org.jetbrains.exposed.v1.core.greaterEq
+import org.jetbrains.exposed.v1.core.lowerCase
+import org.jetbrains.exposed.v1.core.minus
+import org.jetbrains.exposed.v1.core.or
+import org.jetbrains.exposed.v1.core.plus
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
+import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.select
+import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.jdbc.update
+import org.jetbrains.exposed.v1.jdbc.upsert
 import java.sql.SQLException
 import java.util.UUID
 
@@ -13,7 +34,7 @@ import java.util.UUID
  * Diamond-backed accounts. Every balance change goes through a SQL transaction
  * and is written to the ledger, so balances can always be explained.
  */
-class Bank(private val c: Connection) {
+class Bank(private val db: Database) {
 
     enum class TxType { DEPOSIT, WITHDRAW, PAY, SHOP_PURCHASE }
 
@@ -31,20 +52,26 @@ class Bank(private val c: Connection) {
     )
 
     fun ensureAccount(id: UUID, name: String) {
-        c.update(
-            "INSERT INTO accounts(uuid, name) VALUES (?, ?) ON CONFLICT(uuid) DO UPDATE SET name = excluded.name",
-            id, name,
-        )
+        transaction(db) {
+            Accounts.upsert(onUpdate = { it[Accounts.name] = insertValue(Accounts.name) }) {
+                it[uuid] = id
+                it[Accounts.name] = name
+            }
+        }
     }
 
-    fun balance(id: UUID): Long =
-        c.queryOne("SELECT balance FROM accounts WHERE uuid = ?", id) { it.getLong(1) } ?: 0
+    fun balance(id: UUID): Long = transaction(db) {
+        Accounts.select(Accounts.balance).where { Accounts.uuid eq id }.singleOrNull()?.get(Accounts.balance) ?: 0
+    }
 
-    fun findByName(name: String): Account? =
-        c.queryOne("SELECT uuid, name, balance FROM accounts WHERE name = ? COLLATE NOCASE LIMIT 1", name, map = ::account)
+    fun findByName(name: String): Account? = transaction(db) {
+        Accounts.selectAll().where { Accounts.name.lowerCase() eq name.lowercase() }.limit(1).singleOrNull()?.let(::account)
+    }
 
-    fun top(limit: Int): List<Account> =
-        c.query("SELECT uuid, name, balance FROM accounts WHERE balance > 0 ORDER BY balance DESC LIMIT ?", limit, map = ::account)
+    fun top(limit: Int): List<Account> = transaction(db) {
+        Accounts.selectAll().where { Accounts.balance greater 0L }
+            .orderBy(Accounts.balance, SortOrder.DESC).limit(limit).map(::account)
+    }
 
     fun deposit(id: UUID, amount: Long) {
         atomically {
@@ -72,74 +99,79 @@ class Bank(private val c: Connection) {
         true
     }
 
-    fun history(id: UUID, limit: Int, offset: Int): List<Txn> = c.query(
-        """
-        SELECT t.created_at, t.type, t.from_uuid, f.name, t.to_uuid, r.name, t.amount, t.item, t.item_amount
-        FROM transactions t
-        LEFT JOIN accounts f ON f.uuid = t.from_uuid
-        LEFT JOIN accounts r ON r.uuid = t.to_uuid
-        WHERE t.from_uuid = ?1 OR t.to_uuid = ?1
-        ORDER BY t.id DESC LIMIT ?2 OFFSET ?3""",
-        id, limit, offset,
-    ) { rs ->
-        Txn(
-            rs.getLong(1), TxType.valueOf(rs.getString(2)),
-            rs.getUuid(3), rs.getString(4), rs.getUuid(5), rs.getString(6),
-            rs.getLong(7), rs.getString(8), rs.getInt(9),
+    fun history(id: UUID, limit: Int, offset: Int): List<Txn> = transaction(db) {
+        val f = Accounts.alias("f")
+        val r = Accounts.alias("r")
+        Transactions
+            .join(f, JoinType.LEFT, Transactions.fromUuid, f[Accounts.uuid])
+            .join(r, JoinType.LEFT, Transactions.toUuid, r[Accounts.uuid])
+            .selectAll()
+            .where { (Transactions.fromUuid eq id) or (Transactions.toUuid eq id) }
+            .orderBy(Transactions.id, SortOrder.DESC)
+            .limit(limit).offset(offset.toLong())
+            .map { row ->
+                Txn(
+                    row[Transactions.createdAt].toInstant().toEpochMilli(), row[Transactions.type],
+                    row[Transactions.fromUuid], row.getOrNull(f[Accounts.name]),
+                    row[Transactions.toUuid], row.getOrNull(r[Accounts.name]),
+                    row[Transactions.amount], row[Transactions.item], row[Transactions.itemAmount] ?: 0,
+                )
+            }
+    }
+
+    fun stats(id: UUID): Stats = transaction(db) {
+        val incoming = Transactions.toUuid eq id
+        val outgoing = Transactions.fromUuid eq id
+        fun total(type: TxType, side: Op<Boolean>) =
+            Sum(case().When((Transactions.type eq type) and side, Transactions.amount), LongColumnType())
+
+        val deposited = total(TxType.DEPOSIT, incoming)
+        val withdrawn = total(TxType.WITHDRAW, outgoing)
+        val sent = total(TxType.PAY, outgoing)
+        val received = total(TxType.PAY, incoming)
+        val shopIncome = total(TxType.SHOP_PURCHASE, incoming)
+        val shopSpent = total(TxType.SHOP_PURCHASE, outgoing)
+        val count = Transactions.id.count()
+
+        val row = Transactions.select(deposited, withdrawn, sent, received, shopIncome, shopSpent, count)
+            .where { incoming or outgoing }
+            .single()
+        Stats(
+            row[deposited] ?: 0, row[withdrawn] ?: 0, row[sent] ?: 0, row[received] ?: 0,
+            row[shopIncome] ?: 0, row[shopSpent] ?: 0, row[count].toInt(),
         )
     }
 
-    fun stats(id: UUID): Stats = c.queryOne(
-        """
-        SELECT
-          COALESCE(SUM(CASE WHEN type = 'DEPOSIT'       AND to_uuid   = ?1 THEN amount END), 0),
-          COALESCE(SUM(CASE WHEN type = 'WITHDRAW'      AND from_uuid = ?1 THEN amount END), 0),
-          COALESCE(SUM(CASE WHEN type = 'PAY'           AND from_uuid = ?1 THEN amount END), 0),
-          COALESCE(SUM(CASE WHEN type = 'PAY'           AND to_uuid   = ?1 THEN amount END), 0),
-          COALESCE(SUM(CASE WHEN type = 'SHOP_PURCHASE' AND to_uuid   = ?1 THEN amount END), 0),
-          COALESCE(SUM(CASE WHEN type = 'SHOP_PURCHASE' AND from_uuid = ?1 THEN amount END), 0),
-          COUNT(*)
-        FROM transactions WHERE from_uuid = ?1 OR to_uuid = ?1""",
-        id,
-    ) { rs ->
-        Stats(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getLong(4), rs.getLong(5), rs.getLong(6), rs.getInt(7))
-    }!!
-
+    /** Conditional debit: matches no row (and changes nothing) if the balance is too low. */
     private fun debit(id: UUID, amount: Long): Boolean =
-        c.update("UPDATE accounts SET balance = balance - ?1 WHERE uuid = ?2 AND balance >= ?1", amount, id) == 1
+        Accounts.update({ (Accounts.uuid eq id) and (Accounts.balance greaterEq amount) }) {
+            it[balance] = balance - amount
+        } == 1
 
     private fun credit(id: UUID, amount: Long) {
-        if (c.update("UPDATE accounts SET balance = balance + ? WHERE uuid = ?", amount, id) != 1) {
-            throw SQLException("No account for $id")
-        }
+        val updated = Accounts.update({ Accounts.uuid eq id }) { it[balance] = balance + amount }
+        if (updated != 1) throw SQLException("No account for $id")
     }
 
     private fun log(
         type: TxType, from: UUID?, to: UUID?, amount: Long,
         item: String? = null, itemAmount: Int? = null, shopId: Long? = null,
     ) {
-        c.update(
-            """
-            INSERT INTO transactions(created_at, type, from_uuid, to_uuid, amount, item, item_amount, shop_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            System.currentTimeMillis(), type.name, from, to, amount, item, itemAmount, shopId,
-        )
-    }
-
-    /** Runs [work] in a SQL transaction; commits if it returns true, rolls back otherwise. */
-    private inline fun atomically(work: () -> Boolean): Boolean {
-        c.autoCommit = false
-        try {
-            val ok = work()
-            if (ok) c.commit() else c.rollback()
-            return ok
-        } catch (e: Throwable) {
-            c.rollback()
-            throw e
-        } finally {
-            c.autoCommit = true
+        Transactions.insert {
+            it[Transactions.type] = type
+            it[fromUuid] = from
+            it[toUuid] = to
+            it[Transactions.amount] = amount
+            it[Transactions.item] = item
+            it[Transactions.itemAmount] = itemAmount
+            it[Transactions.shopId] = shopId
         }
     }
 
-    private fun account(rs: ResultSet) = Account(UUID.fromString(rs.getString(1)), rs.getString(2), rs.getLong(3))
+    /** Runs [work] in a SQL transaction; commits if it returns true, rolls back otherwise. */
+    private fun atomically(work: JdbcTransaction.() -> Boolean): Boolean = transaction(db) {
+        work().also { ok -> if (!ok) rollback() }
+    }
+
+    private fun account(row: ResultRow) = Account(row[Accounts.uuid], row[Accounts.name], row[Accounts.balance])
 }

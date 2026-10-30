@@ -1,9 +1,6 @@
 package dev.diamondecon.shop
 
-import dev.diamondecon.getUuid
-import dev.diamondecon.insert
-import dev.diamondecon.query
-import dev.diamondecon.update
+import dev.diamondecon.db.Shops
 import dev.diamondecon.util.countItems
 import dev.diamondecon.util.dia
 import dev.diamondecon.util.prettyName
@@ -25,32 +22,43 @@ import org.bukkit.inventory.Inventory
 import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.java.JavaPlugin
 import org.bukkit.util.Transformation
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
+import org.jetbrains.exposed.v1.jdbc.insertAndGetId
+import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.jdbc.update
 import org.joml.AxisAngle4f
 import org.joml.Vector3f
-import java.sql.Connection
 import java.sql.SQLException
 import java.util.UUID
 import java.util.logging.Level
 import kotlin.math.PI
 
-class ShopManager(private val plugin: JavaPlugin, private val c: Connection) {
+class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
 
     private val shops = HashMap<BlockKey, Shop>()
 
     val all: Collection<Shop> get() = shops.values
 
     fun load() {
-        val loaded = c.query("SELECT id, owner_uuid, owner_name, world, x, y, z, item, quantity, price, stock FROM shops") { rs ->
-            val id = rs.getLong(1)
-            val item = deserialize(rs.getString(8))
-            if (item == null) {
-                plugin.logger.warning("Skipping shop #$id: its item could not be loaded")
-                return@query null
+        val loaded = transaction(db) {
+            Shops.selectAll().mapNotNull { row ->
+                val id = row[Shops.id].value
+                val item = deserialize(row[Shops.item])
+                if (item == null) {
+                    plugin.logger.warning("Skipping shop #$id: its item could not be loaded")
+                    return@mapNotNull null
+                }
+                val key = BlockKey(row[Shops.world], row[Shops.x], row[Shops.y], row[Shops.z])
+                Shop(
+                    id, row[Shops.ownerUuid], row[Shops.ownerName], key, item,
+                    row[Shops.quantity], row[Shops.price], row[Shops.stock],
+                )
             }
-            val key = BlockKey(rs.getString(4), rs.getInt(5), rs.getInt(6), rs.getInt(7))
-            Shop(id, rs.getUuid(2)!!, rs.getString(3), key, item, rs.getInt(9), rs.getLong(10), rs.getInt(11))
         }
-        loaded.filterNotNull().associateByTo(shops) { it.key }
+        loaded.associateByTo(shops) { it.key }
         plugin.logger.info("Loaded ${shops.size} shops")
     }
 
@@ -78,13 +86,20 @@ class ShopManager(private val plugin: JavaPlugin, private val c: Connection) {
     fun create(owner: UUID, ownerName: String, block: Block, item: ItemStack, quantity: Int, price: Long): Shop {
         val key = BlockKey.of(block)
         val proto = item.clone().apply { amount = 1 }
-        val id = c.insert(
-            """
-            INSERT INTO shops(owner_uuid, owner_name, world, x, y, z, item, item_type, quantity, price, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            owner, ownerName, key.world, key.x, key.y, key.z,
-            serialize(proto), proto.type.name, quantity, price, System.currentTimeMillis(),
-        )
+        val id = transaction(db) {
+            Shops.insertAndGetId {
+                it[ownerUuid] = owner
+                it[Shops.ownerName] = ownerName
+                it[world] = key.world
+                it[x] = key.x
+                it[y] = key.y
+                it[z] = key.z
+                it[Shops.item] = serialize(proto)
+                it[itemType] = proto.type.name
+                it[Shops.quantity] = quantity
+                it[Shops.price] = price
+            }.value
+        }
         val shop = Shop(id, owner, ownerName, key, proto, quantity, price, 0)
         shops[key] = shop
         spawnDecor(shop)
@@ -93,13 +108,13 @@ class ShopManager(private val plugin: JavaPlugin, private val c: Connection) {
     }
 
     fun remove(shop: Shop) {
-        c.update("DELETE FROM shops WHERE id = ?", shop.id)
+        transaction(db) { Shops.deleteWhere { id eq shop.id } }
         shops.remove(shop.key)
         despawnDecor(shop)
     }
 
     fun setPrice(shop: Shop, price: Long) {
-        c.update("UPDATE shops SET price = ? WHERE id = ?", price, shop.id)
+        transaction(db) { Shops.update({ Shops.id eq shop.id }) { it[Shops.price] = price } }
         shop.price = price
         updateLabel(shop)
     }
@@ -119,7 +134,7 @@ class ShopManager(private val plugin: JavaPlugin, private val c: Connection) {
         if (stock != shop.stock) {
             shop.stock = stock
             try {
-                c.update("UPDATE shops SET stock = ? WHERE id = ?", stock, shop.id)
+                transaction(db) { Shops.update({ Shops.id eq shop.id }) { it[Shops.stock] = stock } }
             } catch (e: SQLException) {
                 plugin.logger.log(Level.WARNING, "Could not save stock for shop #${shop.id}", e)
             }
