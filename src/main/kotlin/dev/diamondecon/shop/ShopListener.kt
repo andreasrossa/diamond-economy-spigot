@@ -1,10 +1,11 @@
 package dev.diamondecon.shop
 
 import dev.diamondecon.bank.Bank
+import dev.diamondecon.db.DbWorker
 import dev.diamondecon.util.PREFIX
 import dev.diamondecon.util.countItems
 import dev.diamondecon.util.dia
-import dev.diamondecon.util.giveItems
+import dev.diamondecon.util.giveOrDrop
 import dev.diamondecon.util.roomFor
 import dev.diamondecon.util.takeItems
 import org.bukkit.Bukkit
@@ -29,7 +30,6 @@ import org.bukkit.event.world.ChunkLoadEvent
 import org.bukkit.event.world.ChunkUnloadEvent
 import org.bukkit.inventory.EquipmentSlot
 import org.bukkit.plugin.java.JavaPlugin
-import java.sql.SQLException
 import java.util.UUID
 import java.util.logging.Level
 
@@ -38,6 +38,7 @@ class ShopListener(
     private val plugin: JavaPlugin,
     private val shops: ShopManager,
     private val bank: Bank,
+    private val worker: DbWorker,
 ) : Listener {
 
     private val lastClick = HashMap<UUID, Long>()
@@ -65,6 +66,14 @@ class ShopListener(
         }
     }
 
+    /**
+     * Buying runs in three steps so items and money stay in sync while the payment is on the database thread:
+     * 1. Main thread: check stock and space, then reserve the items by taking them out of the chest,
+     *    so nobody else can buy or remove them meanwhile.
+     * 2. Database thread: the payment.
+     * 3. Main thread: deliver the items, or put them back if the payment didn't go through. If the buyer
+     *    left in between, the items go back and the payment is refunded.
+     */
     private fun buy(buyer: Player, shop: Shop) {
         val chest = shops.inventory(shop)
         if (chest == null) {
@@ -81,38 +90,71 @@ class ShopListener(
             buyer.sendMessage("${PREFIX}You don't have enough inventory space.")
             return
         }
-        val paid = try {
-            bank.transfer(
-                buyer.uniqueId, shop.owner, shop.price, Bank.TxType.SHOP_PURCHASE,
-                shop.item.type.name, shop.displayName, shop.quantity, shop.id,
-            )
-        } catch (ex: SQLException) {
-            plugin.logger.log(Level.SEVERE, "Shop purchase failed", ex)
-            buyer.sendMessage("$PREFIX${ChatColor.RED}Something went wrong, nothing was charged.")
-            return
-        }
-        if (!paid) {
-            buyer.sendMessage("${PREFIX}You need ${dia(shop.price)} in the bank. Use /deposit first.")
-            return
-        }
 
-        // Payment committed; everything below is in-memory on the main thread and cannot fail halfway.
         chest.takeItems(shop.item, shop.quantity)
-        val leftover = buyer.inventory.giveItems(shop.item, shop.quantity)
-        if (leftover > 0) {
-            buyer.world.dropItemNaturally(buyer.location, shop.item.clone().apply { amount = leftover })
-        }
         shops.refresh(shop)
 
+        // The sale as the buyer saw it, in case the shop changes before the payment is done.
+        val buyerId = buyer.uniqueId
+        val owner = shop.owner
+        val price = shop.price
+        val quantity = shop.quantity
+        val itemType = shop.item.type.name
+        val itemName = shop.displayName
+        worker.submit({
+            bank.transfer(buyerId, owner, price, Bank.TxType.SHOP_PURCHASE, itemType, itemName, quantity, shop.id)
+        }) { result ->
+            val paid = result.getOrElse { e ->
+                plugin.logger.log(Level.SEVERE, "Shop purchase failed", e)
+                shops.returnItems(shop, quantity)
+                buyer.sendMessage("$PREFIX${ChatColor.RED}Something went wrong, nothing was charged.")
+                return@submit
+            }
+            when {
+                !paid -> {
+                    shops.returnItems(shop, quantity)
+                    buyer.sendMessage("${PREFIX}You need ${dia(price)} in the bank. Use /deposit first.")
+                }
+                !buyer.isOnline -> {
+                    // Paid, but gone before delivery: a logged-out player's inventory can't be changed.
+                    shops.returnItems(shop, quantity)
+                    refund(buyer, owner, price, itemType, itemName, quantity, shop.id)
+                }
+                else -> deliver(buyer, shop, owner, price, quantity, itemName)
+            }
+        }
+    }
+
+    private fun deliver(buyer: Player, shop: Shop, owner: UUID, price: Long, quantity: Int, itemName: String) {
+        buyer.giveOrDrop(shop.item, quantity)
         val fx = shops.center(shop).add(0.0, 0.9, 0.0)
         fx.world!!.spawnParticle(Particle.HAPPY_VILLAGER, fx, 12, 0.35, 0.3, 0.35)
         buyer.playSound(fx, Sound.BLOCK_AMETHYST_BLOCK_CHIME, 1f, 1.4f)
         buyer.playSound(fx, Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.6f, 1.2f)
-        val what = "${ChatColor.AQUA}${shop.quantity}× ${ChatColor.WHITE}${shop.displayName}${ChatColor.GRAY}"
-        buyer.sendMessage("${PREFIX}Bought $what for ${dia(shop.price)}. Thank you! ♥")
-        Bukkit.getPlayer(shop.owner)?.sendMessage(
-            "$PREFIX${ChatColor.WHITE}${buyer.name}${ChatColor.GRAY} bought $what for ${dia(shop.price)}."
+        val what = "${ChatColor.AQUA}$quantity× ${ChatColor.WHITE}$itemName${ChatColor.GRAY}"
+        buyer.sendMessage("${PREFIX}Bought $what for ${dia(price)}. Thank you! ♥")
+        Bukkit.getPlayer(owner)?.sendMessage(
+            "$PREFIX${ChatColor.WHITE}${buyer.name}${ChatColor.GRAY} bought $what for ${dia(price)}."
         )
+    }
+
+    private fun refund(
+        buyer: Player, owner: UUID, price: Long, itemType: String, itemName: String, quantity: Int, shopId: Long,
+    ) {
+        worker.submit({
+            bank.transfer(owner, buyer.uniqueId, price, Bank.TxType.REFUND, itemType, itemName, quantity, shopId)
+        }) { result ->
+            if (result.getOrDefault(false)) {
+                plugin.logger.info("${buyer.name} left before their purchase from shop #$shopId was delivered; refunded ${price}◆")
+            } else {
+                plugin.logger.log(
+                    Level.SEVERE,
+                    "${buyer.name} (${buyer.uniqueId}) paid ${price}◆ to $owner at shop #$shopId but left before delivery, " +
+                        "and the refund failed. The items are back in the shop; refund the payment by hand.",
+                    result.exceptionOrNull(),
+                )
+            }
+        }
     }
 
     @EventHandler
@@ -131,14 +173,8 @@ class ShopListener(
             p.sendMessage("${PREFIX}This is ${shop.ownerName}'s shop, hands off!")
             return
         }
-        try {
-            shops.remove(shop)
-            p.sendMessage("${PREFIX}Shop closed.")
-        } catch (ex: SQLException) {
-            e.isCancelled = true
-            plugin.logger.log(Level.SEVERE, "Could not remove shop #${shop.id}", ex)
-            p.sendMessage("$PREFIX${ChatColor.RED}Could not remove the shop, try again.")
-        }
+        shops.remove(shop)
+        p.sendMessage("${PREFIX}Shop closed.")
     }
 
     @EventHandler(ignoreCancelled = true)

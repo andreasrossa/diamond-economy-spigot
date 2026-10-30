@@ -28,6 +28,7 @@ It will read the plugin's database directly, so treat the schema as a public int
 |---|---|
 | `DiamondEcon.kt` | Plugin entry point. Wires everything together and registers commands and listeners |
 | `db/Storage.kt` | HikariCP pool to Postgres (settings in `config.yml`), Exposed `Database`, runs migrations on startup |
+| `db/DbWorker.kt` | Single database thread: `submit(work) { result -> }` runs `work` off-thread, the callback on the main thread |
 | `db/Migrations.kt` | Versioned migration runner (`schema_version` table) over `src/main/resources/db/migrations/*.sql` |
 | `db/Tables.kt` | Exposed DSL tables `Accounts`, `Transactions`, `Shops` (the dashboard's schema) |
 | `bank/Bank.kt` | Accounts, atomic debit/credit/transfer, ledger writes, history/stats queries |
@@ -45,9 +46,19 @@ It will read the plugin's database directly, so treat the schema as a public int
 - **Every balance change goes through `Bank`.** It runs as one SQL transaction (conditional debit
   `WHERE balance >= amount`, credit, ledger insert) and writes a row to `transactions`.
   Never change `accounts.balance` anywhere else.
-- **Keep items and money in sync.** Validate items first (stock, inventory space), then commit the money,
-  then move items in the same server tick. Item moves can't fail halfway on the main thread, so nothing
-  can be duplicated or lost. Any change to threading must keep this guarantee.
+- **Database work never runs on the main thread** (except the migrations and `ShopManager.load` at startup).
+  It goes through `DbWorker`: one thread, jobs in submission order, so writes never overtake each other and
+  a balance read in the same job just before a write is exact. Callbacks run on the main thread, and only there
+  may code touch the world, inventories or the shop cache.
+- **Keep items and money in sync** while the money step runs on the database thread:
+  - Items the player gives up are taken *before* the money moves and given back if it fails (`/deposit`).
+    Shop stock is *reserved* (taken out of the chest) before payment and put back if it fails or is declined.
+  - Items the player receives are handed out *after* the money committed (`/withdraw`, purchases). If the player
+    logged out in between, their saved inventory can't be changed, so the payment is undone with a `REFUND`
+    ledger entry (and shop items go back to the chest).
+  - Nothing in a job may fail after its money write commits, or the callback's failure path would undo items
+    for money that did move.
+  - `DbWorker.stop()` (onDisable) finishes queued jobs and runs their callbacks before the pool closes.
 - **Shops** are single chests, trapped chests or barrels (copper chests are excluded, since copper golems
   move items). They are sell-only: a shop sells `quantity` items for `price` diamonds. Items are matched
   with `ItemStack.isSimilar`. The shop's item is stored as YAML-serialized `ItemStack`, plus `item_type`
@@ -84,11 +95,10 @@ It will read the plugin's database directly, so treat the schema as a public int
   Purchases haven't been tested in-game yet.
 - Local test server: `~/mc`. To install while it's running, put the jar in `~/mc/plugins/update/`
   (Bukkit's update folder). It replaces the plugin jar on the next restart.
-- **All database calls still run synchronously on the main server thread.** Hikari `connectionTimeout` is 5s and
-  Exposed retries are off (`defaultMaxAttempts = 1`), so an outage stalls a tick for at most ~5s per call.
+- Hikari `connectionTimeout` is 5s and Exposed retries are off (`defaultMaxAttempts = 1`). During an outage,
+  each queued job fails after ~5s and the player gets an error; the server itself doesn't stall.
+- Known gap: `shops.owner_name` isn't updated when a shop owner renames their Minecraft account.
 
 ## Next step
 
-Move database work off the main thread (single executor), then hop back with the Bukkit scheduler
-to touch the world or inventories. Shop purchases need care so items can't be duplicated:
-reserve/validate, then pay, then move items with a re-check. Revisit the retry/timeout settings in `Storage` then.
+Test the threaded purchase, deposit and withdraw flows in-game (including logging out mid-purchase).

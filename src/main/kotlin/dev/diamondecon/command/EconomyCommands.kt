@@ -1,10 +1,12 @@
 package dev.diamondecon.command
 
 import dev.diamondecon.bank.Bank
+import dev.diamondecon.db.DbWorker
 import dev.diamondecon.util.PREFIX
 import dev.diamondecon.util.countItems
 import dev.diamondecon.util.dia
-import dev.diamondecon.util.giveItems
+import dev.diamondecon.util.dropItems
+import dev.diamondecon.util.giveOrDrop
 import dev.diamondecon.util.materialName
 import dev.diamondecon.util.roomFor
 import dev.diamondecon.util.takeItems
@@ -22,45 +24,40 @@ import org.bukkit.event.Listener
 import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.java.JavaPlugin
-import java.sql.SQLException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.logging.Level
 
 /** /balance, /deposit, /withdraw, /pay, /history, /stats, /baltop */
-class EconomyCommands(private val plugin: JavaPlugin, private val bank: Bank) : CommandExecutor, TabCompleter, Listener {
+class EconomyCommands(
+    private val plugin: JavaPlugin,
+    private val bank: Bank,
+    private val worker: DbWorker,
+) : CommandExecutor, TabCompleter, Listener {
 
     @EventHandler
     fun onJoin(e: PlayerJoinEvent) {
-        try {
-            bank.ensureAccount(e.player.uniqueId, e.player.name)
-        } catch (ex: SQLException) {
-            plugin.logger.log(Level.SEVERE, "Could not create account for ${e.player.name}", ex)
-        }
+        val p = e.player
+        worker.write("create account for ${p.name}") { bank.ensureAccount(p.uniqueId, p.name) }
     }
 
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<String>): Boolean {
-        try {
-            when (command.name) {
-                "balance" -> balance(sender, args)
-                "baltop" -> baltop(sender)
-                else -> {
-                    if (sender !is Player) {
-                        sender.sendMessage("Only players can use this command.")
-                        return true
-                    }
-                    when (command.name) {
-                        "deposit" -> deposit(sender, args)
-                        "withdraw" -> withdraw(sender, args)
-                        "pay" -> pay(sender, args)
-                        "history" -> history(sender, args)
-                        "stats" -> stats(sender)
-                    }
+        when (command.name) {
+            "balance" -> balance(sender, args)
+            "baltop" -> baltop(sender)
+            else -> {
+                if (sender !is Player) {
+                    sender.sendMessage("Only players can use this command.")
+                    return true
+                }
+                when (command.name) {
+                    "deposit" -> deposit(sender, args)
+                    "withdraw" -> withdraw(sender, args)
+                    "pay" -> pay(sender, args)
+                    "history" -> history(sender, args)
+                    "stats" -> stats(sender)
                 }
             }
-        } catch (ex: SQLException) {
-            plugin.logger.log(Level.SEVERE, "Command /${command.name} failed", ex)
-            sender.sendMessage("$PREFIX${ChatColor.RED}Something went wrong, nothing was changed.")
         }
         return true
     }
@@ -71,20 +68,25 @@ class EconomyCommands(private val plugin: JavaPlugin, private val bank: Bank) : 
                 sender.sendMessage("${PREFIX}You can only check your own balance.")
                 return
             }
-            val acc = bank.findByName(args[0])
-            sender.sendMessage(
-                if (acc != null) "$PREFIX${ChatColor.WHITE}${acc.name}${ChatColor.GRAY} has ${dia(acc.balance)}"
-                else "${PREFIX}No player called ${args[0]}."
-            )
+            worker.forSender(sender, "/balance", { bank.findByName(args[0]) }) { acc ->
+                sender.sendMessage(
+                    if (acc != null) "$PREFIX${ChatColor.WHITE}${acc.name}${ChatColor.GRAY} has ${dia(acc.balance)}"
+                    else "${PREFIX}No player called ${args[0]}."
+                )
+            }
             return
         }
         if (sender !is Player) {
             sender.sendMessage("Usage: /balance <player>")
             return
         }
-        sender.sendMessage("${PREFIX}Balance: ${dia(bank.balance(sender.uniqueId))}")
+        val id = sender.uniqueId
+        worker.forSender(sender, "/balance", { bank.balance(id) }) { balance ->
+            sender.sendMessage("${PREFIX}Balance: ${dia(balance)}")
+        }
     }
 
+    /** Takes the diamonds first, then credits them. If the bank write fails, the diamonds are handed back. */
     private fun deposit(p: Player, args: Array<String>) {
         val inv = p.inventory
         val diamonds = inv.countItems(DIAMOND)
@@ -104,42 +106,90 @@ class EconomyCommands(private val plugin: JavaPlugin, private val bank: Bank) : 
             p.sendMessage("${PREFIX}You don't have any diamonds to deposit.")
             return
         }
-        bank.deposit(p.uniqueId, amount)
-        // Committed; take the items (counted above on the same tick).
-        if (all) {
-            inv.takeItems(DIAMOND, diamonds)
-            inv.takeItems(DIAMOND_BLOCK, blocks)
-        } else {
-            inv.takeItems(DIAMOND, amount.toInt())
+        val takenDiamonds = if (all) diamonds else amount.toInt()
+        inv.takeItems(DIAMOND, takenDiamonds)
+        inv.takeItems(DIAMOND_BLOCK, blocks)
+
+        val id = p.uniqueId
+        worker.submit({
+            // Nothing may fail after the deposit commits, or the diamonds would be handed back as well.
+            // Writes are serialized on the database thread, so the balance read before is exact.
+            val before = bank.balance(id)
+            bank.deposit(id, amount)
+            before + amount
+        }) { result ->
+            result.onSuccess { balance ->
+                p.playSound(p.location, Sound.BLOCK_AMETHYST_BLOCK_CHIME, 1f, 1.2f)
+                p.sendMessage("${PREFIX}Deposited ${dia(amount)}. Balance: ${dia(balance)}")
+            }.onFailure { e ->
+                plugin.logger.log(Level.SEVERE, "/deposit of $amount for ${p.name} failed, returning the diamonds", e)
+                if (p.isOnline) {
+                    p.giveOrDrop(DIAMOND, takenDiamonds)
+                    p.giveOrDrop(DIAMOND_BLOCK, blocks)
+                    p.sendMessage("$PREFIX${ChatColor.RED}Something went wrong, your diamonds were given back.")
+                } else {
+                    // A logged-out player's inventory is already saved; changing it now would lose the diamonds.
+                    plugin.logger.severe("${p.name} logged out; dropping their $amount◆ at ${p.location}")
+                    dropItems(p.location, DIAMOND, takenDiamonds)
+                    dropItems(p.location, DIAMOND_BLOCK, blocks)
+                }
+            }
         }
-        p.playSound(p.location, Sound.BLOCK_AMETHYST_BLOCK_CHIME, 1f, 1.2f)
-        p.sendMessage("${PREFIX}Deposited ${dia(amount)}. Balance: ${dia(bank.balance(p.uniqueId))}")
     }
 
+    private sealed interface WithdrawResult {
+        data class Done(val amount: Int, val wanted: Long, val balance: Long) : WithdrawResult
+        data class TooLittle(val balance: Long) : WithdrawResult
+    }
+
+    /** Debits first, then hands out the diamonds. If the player left in between, the debit is refunded. */
     private fun withdraw(p: Player, args: Array<String>) {
         if (args.isEmpty()) {
             p.sendMessage("${PREFIX}Usage: /withdraw <amount|all>")
             return
         }
-        val balance = bank.balance(p.uniqueId)
-        val requested = if (args[0].equals("all", ignoreCase = true)) balance else parseAmount(p, args[0]) ?: return
-        if (requested == 0L || requested > balance) {
-            p.sendMessage("${PREFIX}You only have ${dia(balance)} in the bank.")
-            return
-        }
-        val amount = minOf(requested, p.inventory.roomFor(DIAMOND).toLong()).toInt()
-        if (amount == 0) {
+        val all = args[0].equals("all", ignoreCase = true)
+        val requested = if (all) null else parseAmount(p, args[0]) ?: return
+        val room = p.inventory.roomFor(DIAMOND)
+        if (room == 0) {
             p.sendMessage("${PREFIX}Your inventory is full.")
             return
         }
-        if (!bank.withdraw(p.uniqueId, amount.toLong())) {
-            p.sendMessage("${PREFIX}You don't have enough diamonds in the bank.")
-            return
+        val id = p.uniqueId
+        worker.forSender(p, "/withdraw", {
+            val balance = bank.balance(id)
+            val wanted = requested ?: balance
+            val amount = minOf(wanted, room.toLong())
+            // Nothing may fail after the withdrawal commits, or the player would lose the diamonds.
+            if (wanted == 0L || wanted > balance || !bank.withdraw(id, amount)) {
+                WithdrawResult.TooLittle(balance)
+            } else {
+                WithdrawResult.Done(amount.toInt(), wanted, balance - amount)
+            }
+        }) { result ->
+            when (result) {
+                is WithdrawResult.TooLittle -> p.sendMessage("${PREFIX}You only have ${dia(result.balance)} in the bank.")
+                is WithdrawResult.Done -> {
+                    if (!p.isOnline) {
+                        worker.write("refund an undelivered withdrawal of ${result.amount}◆ to ${p.name}") {
+                            bank.refundWithdrawal(id, result.amount.toLong())
+                        }
+                        return@forSender
+                    }
+                    p.giveOrDrop(DIAMOND, result.amount)
+                    p.playSound(p.location, Sound.ENTITY_ITEM_PICKUP, 1f, 1f)
+                    val note = if (result.amount < result.wanted) " (only ${result.amount} fit in your inventory)" else ""
+                    p.sendMessage("${PREFIX}Withdrew ${dia(result.amount)}$note. Balance: ${dia(result.balance)}")
+                }
+            }
         }
-        p.inventory.giveItems(DIAMOND, amount)
-        p.playSound(p.location, Sound.ENTITY_ITEM_PICKUP, 1f, 1f)
-        val note = if (amount < requested) " (only $amount fit in your inventory)" else ""
-        p.sendMessage("${PREFIX}Withdrew ${dia(amount)}$note. Balance: ${dia(bank.balance(p.uniqueId))}")
+    }
+
+    private sealed interface PayResult {
+        data object NoSuchPlayer : PayResult
+        data object Self : PayResult
+        data object TooLittle : PayResult
+        data class Done(val target: Bank.Account) : PayResult
     }
 
     private fun pay(p: Player, args: Array<String>) {
@@ -147,24 +197,29 @@ class EconomyCommands(private val plugin: JavaPlugin, private val bank: Bank) : 
             p.sendMessage("${PREFIX}Usage: /pay <player> <amount>")
             return
         }
-        val target = bank.findByName(args[0])
-        if (target == null) {
-            p.sendMessage("${PREFIX}No player called ${args[0]} has joined this server.")
-            return
-        }
-        if (target.uuid == p.uniqueId) {
-            p.sendMessage("${PREFIX}You can't pay yourself.")
-            return
-        }
         val amount = parseAmount(p, args[1]) ?: return
-        if (!bank.transfer(p.uniqueId, target.uuid, amount, Bank.TxType.PAY)) {
-            p.sendMessage("${PREFIX}You don't have ${dia(amount)} in the bank.")
-            return
-        }
-        p.sendMessage("${PREFIX}Sent ${dia(amount)} to ${ChatColor.WHITE}${target.name}${ChatColor.GRAY}.")
-        Bukkit.getPlayer(target.uuid)?.let { online ->
-            online.sendMessage("$PREFIX${ChatColor.WHITE}${p.name}${ChatColor.GRAY} sent you ${dia(amount)}!")
-            online.playSound(online.location, Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1f, 1.2f)
+        val id = p.uniqueId
+        worker.forSender(p, "/pay", {
+            val target = bank.findByName(args[0])
+            when {
+                target == null -> PayResult.NoSuchPlayer
+                target.uuid == id -> PayResult.Self
+                !bank.transfer(id, target.uuid, amount, Bank.TxType.PAY) -> PayResult.TooLittle
+                else -> PayResult.Done(target)
+            }
+        }) { result ->
+            when (result) {
+                PayResult.NoSuchPlayer -> p.sendMessage("${PREFIX}No player called ${args[0]} has joined this server.")
+                PayResult.Self -> p.sendMessage("${PREFIX}You can't pay yourself.")
+                PayResult.TooLittle -> p.sendMessage("${PREFIX}You don't have ${dia(amount)} in the bank.")
+                is PayResult.Done -> {
+                    p.sendMessage("${PREFIX}Sent ${dia(amount)} to ${ChatColor.WHITE}${result.target.name}${ChatColor.GRAY}.")
+                    Bukkit.getPlayer(result.target.uuid)?.let { online ->
+                        online.sendMessage("$PREFIX${ChatColor.WHITE}${p.name}${ChatColor.GRAY} sent you ${dia(amount)}!")
+                        online.playSound(online.location, Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1f, 1.2f)
+                    }
+                }
+            }
         }
     }
 
@@ -174,7 +229,13 @@ class EconomyCommands(private val plugin: JavaPlugin, private val bank: Bank) : 
             return
         }
         val me = p.uniqueId
-        val txns = bank.history(me, HISTORY_PAGE_SIZE, (page - 1) * HISTORY_PAGE_SIZE)
+        worker.forSender(p, "/history", { bank.history(me, HISTORY_PAGE_SIZE, (page - 1) * HISTORY_PAGE_SIZE) }) { txns ->
+            showHistory(p, page, txns)
+        }
+    }
+
+    private fun showHistory(p: Player, page: Int, txns: List<Bank.Txn>) {
+        val me = p.uniqueId
         if (txns.isEmpty()) {
             p.sendMessage(PREFIX + if (page == 1) "No transactions yet." else "No more transactions.")
             return
@@ -200,13 +261,24 @@ class EconomyCommands(private val plugin: JavaPlugin, private val bank: Bank) : 
                 (if (incoming) "sold " else "bought ") +
                     "${t.itemAmount}× ${t.itemName ?: materialName(t.item ?: "")}${ChatColor.GRAY}" +
                     (if (incoming) " to " else " from ") + other
+            Bank.TxType.REFUND -> when {
+                t.from == null -> "refund, the withdrawal wasn't delivered"
+                incoming -> "refund from $other, the purchase wasn't delivered"
+                else -> "refunded to $other"
+            }
         }
     }
 
     private fun stats(p: Player) {
-        val s = bank.stats(p.uniqueId)
+        val id = p.uniqueId
+        worker.forSender(p, "/stats", { bank.stats(id) to bank.balance(id) }) { (s, balance) ->
+            showStats(p, s, balance)
+        }
+    }
+
+    private fun showStats(p: Player, s: Bank.Stats, balance: Long) {
         p.sendMessage("${ChatColor.AQUA}◆ ${ChatColor.WHITE}Your diamond stats")
-        p.sendMessage("${ChatColor.GRAY}  Balance: ${dia(bank.balance(p.uniqueId))}")
+        p.sendMessage("${ChatColor.GRAY}  Balance: ${dia(balance)}")
         p.sendMessage("${ChatColor.GRAY}  Deposited ${dia(s.deposited)}, withdrew ${dia(s.withdrawn)}")
         p.sendMessage("${ChatColor.GRAY}  Received ${dia(s.received)}, sent ${dia(s.sent)}")
         p.sendMessage("${ChatColor.GRAY}  Shop sales ${dia(s.shopIncome)}, shop spending ${dia(s.shopSpent)}")
@@ -214,9 +286,11 @@ class EconomyCommands(private val plugin: JavaPlugin, private val bank: Bank) : 
     }
 
     private fun baltop(sender: CommandSender) {
-        sender.sendMessage("${ChatColor.AQUA}◆ ${ChatColor.WHITE}Richest players")
-        bank.top(10).forEachIndexed { i, a ->
-            sender.sendMessage("${ChatColor.GRAY}  ${i + 1}. ${ChatColor.WHITE}${a.name} ${dia(a.balance)}")
+        worker.forSender(sender, "/baltop", { bank.top(10) }) { top ->
+            sender.sendMessage("${ChatColor.AQUA}◆ ${ChatColor.WHITE}Richest players")
+            top.forEachIndexed { i, a ->
+                sender.sendMessage("${ChatColor.GRAY}  ${i + 1}. ${ChatColor.WHITE}${a.name} ${dia(a.balance)}")
+            }
         }
     }
 

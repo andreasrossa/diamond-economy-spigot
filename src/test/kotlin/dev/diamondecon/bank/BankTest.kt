@@ -141,6 +141,27 @@ class BankTest {
         assertEquals(11, ledgerRows())
     }
 
+    @Test
+    fun `refunding a withdrawal restores the balance and is logged as a refund`() {
+        bank.deposit(alice, 10)
+        bank.withdraw(alice, 4)
+        bank.refundWithdrawal(alice, 4)
+        assertEquals(10, bank.balance(alice))
+        val refund = bank.history(alice, 1, 0).single()
+        assertEquals(TxType.REFUND, refund.type)
+        assertNull(refund.from)
+        assertEquals(alice, refund.to)
+    }
+
+    @Test
+    fun `refunds aren't counted as shop income or spending`() {
+        bank.deposit(alice, 10)
+        bank.transfer(alice, bob, 5, TxType.SHOP_PURCHASE, "DIRT", "Dirt", 64, 1)
+        bank.transfer(bob, alice, 5, TxType.REFUND, "DIRT", "Dirt", 64, 1)
+        assertEquals(10, bank.balance(alice))
+        assertEquals(Bank.Stats(10, 0, 0, 0, 0, 5, 3), bank.stats(alice))
+    }
+
     // --- history and stats -------------------------------------------------------------------------
 
     @Test

@@ -2,6 +2,7 @@ package dev.diamondecon.command
 
 import dev.diamondecon.bank.Bank
 import dev.diamondecon.command.EconomyCommands.Companion.parseAmount
+import dev.diamondecon.db.DbWorker
 import dev.diamondecon.shop.Shop
 import dev.diamondecon.shop.ShopManager
 import dev.diamondecon.util.PREFIX
@@ -15,7 +16,6 @@ import org.bukkit.command.CommandSender
 import org.bukkit.command.TabCompleter
 import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
-import java.sql.SQLException
 import java.util.logging.Level
 
 /** /shop create|remove|price|name|icon|list, plus admin-only reload|setowner */
@@ -23,6 +23,7 @@ class ShopCommand(
     private val plugin: JavaPlugin,
     private val shops: ShopManager,
     private val bank: Bank,
+    private val worker: DbWorker,
 ) : CommandExecutor, TabCompleter {
 
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<String>): Boolean {
@@ -30,21 +31,16 @@ class ShopCommand(
             sender.sendMessage("Only players can use this command.")
             return true
         }
-        try {
-            when (args.firstOrNull()?.lowercase()) {
-                "create" -> create(sender, args)
-                "remove" -> remove(sender)
-                "price" -> price(sender, args)
-                "name" -> name(sender, args)
-                "icon" -> icon(sender, args)
-                "list" -> list(sender)
-                "reload" -> if (requireAdmin(sender)) reload(sender)
-                "setowner" -> if (requireAdmin(sender)) setOwner(sender, args)
-                else -> help(sender)
-            }
-        } catch (ex: SQLException) {
-            plugin.logger.log(Level.SEVERE, "Command /shop failed", ex)
-            sender.sendMessage("$PREFIX${ChatColor.RED}Something went wrong, nothing was changed.")
+        when (args.firstOrNull()?.lowercase()) {
+            "create" -> create(sender, args)
+            "remove" -> remove(sender)
+            "price" -> price(sender, args)
+            "name" -> name(sender, args)
+            "icon" -> icon(sender, args)
+            "list" -> list(sender)
+            "reload" -> if (requireAdmin(sender)) reload(sender)
+            "setowner" -> if (requireAdmin(sender)) setOwner(sender, args)
+            else -> help(sender)
         }
         return true
     }
@@ -100,11 +96,14 @@ class ShopCommand(
         val price = parseAmount(p, args[2]) ?: return
         val name = parseName(p, args.drop(3)) ?: return
 
-        val shop = shops.create(p.uniqueId, p.name, block, hand, name.ifEmpty { null }, quantity.toInt(), price)
-        p.sendMessage(
-            "${PREFIX}Shop open! Selling ${ChatColor.AQUA}${shop.quantity}× ${ChatColor.WHITE}${shop.displayName}" +
-                "${ChatColor.GRAY} for ${dia(shop.price)}. Fill the chest with stock."
-        )
+        shops.create(p.uniqueId, p.name, block, hand, name.ifEmpty { null }, quantity.toInt(), price) { result ->
+            val shop = result.getOrElse { e -> return@create failed(p, "/shop create", e) }
+            p.sendMessage(
+                if (shop == null) "${PREFIX}The chest is gone, so no shop was created."
+                else "${PREFIX}Shop open! Selling ${ChatColor.AQUA}${shop.quantity}× ${ChatColor.WHITE}${shop.displayName}" +
+                    "${ChatColor.GRAY} for ${dia(shop.price)}. Fill the chest with stock."
+            )
+        }
     }
 
     private fun remove(p: Player) {
@@ -120,25 +119,30 @@ class ShopCommand(
         }
         val shop = lookedAt(p) ?: return
         val price = parseAmount(p, args[1]) ?: return
-        shops.setPrice(shop, price)
-        p.sendMessage("${PREFIX}Price set to ${dia(price)}.")
+        shops.setPrice(shop, price) { result ->
+            result.fold({ p.sendMessage("${PREFIX}Price set to ${dia(price)}.") }) { failed(p, "/shop price", it) }
+        }
     }
 
     private fun name(p: Player, args: Array<String>) {
         val shop = lookedAt(p) ?: return
         val name = parseName(p, args.drop(1)) ?: return
-        shops.setName(shop, name.ifEmpty { null })
-        p.sendMessage(
-            if (name.isEmpty()) "${PREFIX}Name cleared, the shop shows ${ChatColor.WHITE}${shop.displayName}${ChatColor.GRAY} again."
-            else "${PREFIX}Shop renamed to ${ChatColor.WHITE}${shop.displayName}${ChatColor.GRAY}."
-        )
+        shops.setName(shop, name.ifEmpty { null }) { result ->
+            result.fold({
+                p.sendMessage(
+                    if (name.isEmpty()) "${PREFIX}Name cleared, the shop shows ${ChatColor.WHITE}${shop.displayName}${ChatColor.GRAY} again."
+                    else "${PREFIX}Shop renamed to ${ChatColor.WHITE}${shop.displayName}${ChatColor.GRAY}."
+                )
+            }) { failed(p, "/shop name", it) }
+        }
     }
 
     private fun icon(p: Player, args: Array<String>) {
         val shop = lookedAt(p) ?: return
         if (args.getOrNull(1).equals("reset", ignoreCase = true)) {
-            shops.setIcon(shop, null)
-            p.sendMessage("${PREFIX}The shop shows its item again.")
+            shops.setIcon(shop, null) { result ->
+                result.fold({ p.sendMessage("${PREFIX}The shop shows its item again.") }) { failed(p, "/shop icon", it) }
+            }
             return
         }
         val hand = p.inventory.itemInMainHand
@@ -146,8 +150,12 @@ class ShopCommand(
             p.sendMessage("${PREFIX}Hold the item the shop should show, or use /shop icon reset.")
             return
         }
-        shops.setIcon(shop, hand)
-        p.sendMessage("${PREFIX}The shop now shows ${ChatColor.WHITE}${hand.prettyName}${ChatColor.GRAY}. Customers still get the real item ♥")
+        val shown = hand.prettyName
+        shops.setIcon(shop, hand) { result ->
+            result.fold({
+                p.sendMessage("${PREFIX}The shop now shows ${ChatColor.WHITE}$shown${ChatColor.GRAY}. Customers still get the real item ♥")
+            }) { failed(p, "/shop icon", it) }
+        }
     }
 
     private fun list(p: Player) {
@@ -166,8 +174,11 @@ class ShopCommand(
     }
 
     private fun reload(p: Player) {
-        val count = shops.reload()
-        p.sendMessage("${PREFIX}Reloaded $count shops from the database.")
+        shops.reload { result ->
+            result.fold({ count -> p.sendMessage("${PREFIX}Reloaded $count shops from the database.") }) {
+                failed(p, "/shop reload", it)
+            }
+        }
     }
 
     private fun setOwner(p: Player, args: Array<String>) {
@@ -176,17 +187,17 @@ class ShopCommand(
             return
         }
         val shop = lookedAt(p) ?: return
-        val target = bank.findByName(args[1])
-        if (target == null) {
-            p.sendMessage("${PREFIX}No player called ${args[1]} has joined this server.")
-            return
+        worker.forSender(p, "/shop setowner", { bank.findByName(args[1]) }) { target ->
+            when {
+                target == null -> p.sendMessage("${PREFIX}No player called ${args[1]} has joined this server.")
+                target.uuid == shop.owner -> p.sendMessage("${PREFIX}That shop already belongs to ${target.name}.")
+                else -> shops.setOwner(shop, target.uuid, target.name) { result ->
+                    result.fold({
+                        p.sendMessage("${PREFIX}The shop now belongs to ${ChatColor.WHITE}${target.name}${ChatColor.GRAY}.")
+                    }) { failed(p, "/shop setowner", it) }
+                }
+            }
         }
-        if (target.uuid == shop.owner) {
-            p.sendMessage("${PREFIX}That shop already belongs to ${target.name}.")
-            return
-        }
-        shops.setOwner(shop, target.uuid, target.name)
-        p.sendMessage("${PREFIX}The shop now belongs to ${ChatColor.WHITE}${target.name}${ChatColor.GRAY}.")
     }
 
     /**
@@ -205,6 +216,11 @@ class ShopCommand(
             return null
         }
         return name
+    }
+
+    private fun failed(p: Player, what: String, e: Throwable) {
+        plugin.logger.log(Level.SEVERE, "$what failed", e)
+        p.sendMessage(DbWorker.SOMETHING_WENT_WRONG)
     }
 
     private fun requireAdmin(p: Player): Boolean {

@@ -1,5 +1,7 @@
 package dev.diamondecon.util
 
+import org.bukkit.Location
+import org.bukkit.entity.Player
 import org.bukkit.inventory.Inventory
 import org.bukkit.inventory.ItemStack
 
@@ -45,4 +47,20 @@ fun Inventory.giveItems(proto: ItemStack, amount: Int): Int {
         leftover += addItem(stack).values.sumOf { it.amount }
     }
     return leftover
+}
+
+/** Drops [amount] of [proto] at [location], in stacks. */
+fun dropItems(location: Location, proto: ItemStack, amount: Int) {
+    var left = amount
+    while (left > 0) {
+        val stack = proto.clone().apply { this.amount = minOf(proto.maxStackSize, left) }
+        left -= stack.amount
+        location.world!!.dropItemNaturally(location, stack)
+    }
+}
+
+/** Gives [amount] of [proto] to the player; what doesn't fit is dropped at their feet. */
+fun Player.giveOrDrop(proto: ItemStack, amount: Int) {
+    val leftover = inventory.giveItems(proto, amount)
+    if (leftover > 0) dropItems(location, proto, leftover)
 }

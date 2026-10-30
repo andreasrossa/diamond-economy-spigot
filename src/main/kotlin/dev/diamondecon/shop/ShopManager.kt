@@ -1,8 +1,11 @@
 package dev.diamondecon.shop
 
+import dev.diamondecon.db.DbWorker
 import dev.diamondecon.db.Shops
 import dev.diamondecon.util.countItems
 import dev.diamondecon.util.dia
+import dev.diamondecon.util.dropItems
+import dev.diamondecon.util.giveItems
 import org.bukkit.Bukkit
 import org.bukkit.ChatColor
 import org.bukkit.Chunk
@@ -22,6 +25,7 @@ import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.java.JavaPlugin
 import org.bukkit.util.Transformation
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.statements.UpdateStatement
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insertAndGetId
@@ -30,12 +34,14 @@ import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.jetbrains.exposed.v1.jdbc.update
 import org.joml.AxisAngle4f
 import org.joml.Vector3f
-import java.sql.SQLException
 import java.util.UUID
-import java.util.logging.Level
 import kotlin.math.PI
 
-class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
+/**
+ * The shop cache and the shops table. Main thread only; database work goes through [worker]
+ * (except [load], which runs synchronously at startup).
+ */
+class ShopManager(private val plugin: JavaPlugin, private val db: Database, private val worker: DbWorker) {
 
     private val shops = HashMap<BlockKey, Shop>()
 
@@ -48,20 +54,20 @@ class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
 
     /**
      * Replaces the cache with what is in the database, e.g. after editing shops by hand.
-     * If reading fails, this throws and the old cache stays in place.
-     * @return the number of shops loaded
+     * If reading fails, the old cache stays in place. [onDone] gets the number of shops loaded.
      */
-    fun reload(): Int {
-        val loaded = read()
-        shops.values.forEach(::despawnDecor)
-        shops.clear()
-        loaded.associateByTo(shops) { it.key }
-        for (shop in shops.values.filter { isLoaded(it.key) }) {
-            spawnDecor(shop)
-            refresh(shop)
+    fun reload(onDone: (Result<Int>) -> Unit) = worker.submit(::read) { result ->
+        result.onSuccess { loaded ->
+            shops.values.forEach(::despawnDecor)
+            shops.clear()
+            loaded.associateByTo(shops) { it.key }
+            for (shop in shops.values.filter { isLoaded(it.key) }) {
+                spawnDecor(shop)
+                refresh(shop)
+            }
+            plugin.logger.info("Reloaded ${shops.size} shops")
         }
-        plugin.logger.info("Reloaded ${shops.size} shops")
-        return shops.size
+        onDone(result.map { shops.size })
     }
 
     private fun read(): List<Shop> = transaction(db) {
@@ -107,68 +113,102 @@ class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
             n.type == block.type && at(n) != null
         }
 
-    fun create(owner: UUID, ownerName: String, block: Block, item: ItemStack, name: String?, quantity: Int, price: Long): Shop {
+    /**
+     * Saves a new shop, then caches it and spawns its decorations. [onDone] gets null if the chest was
+     * broken while saving (the row is deleted again).
+     */
+    fun create(
+        owner: UUID, ownerName: String, block: Block, item: ItemStack, name: String?, quantity: Int, price: Long,
+        onDone: (Result<Shop?>) -> Unit,
+    ) {
         val key = BlockKey.of(block)
         val proto = item.clone().apply { amount = 1 }
-        val id = transaction(db) {
-            Shops.insertAndGetId {
-                it[ownerUuid] = owner
-                it[Shops.ownerName] = ownerName
-                it[world] = key.world
-                it[x] = key.x
-                it[y] = key.y
-                it[z] = key.z
-                it[Shops.item] = serialize(proto)
-                it[itemType] = proto.type.name
-                it[displayName] = name
-                it[Shops.quantity] = quantity
-                it[Shops.price] = price
-            }.value
+        val data = serialize(proto)
+        worker.submit({
+            transaction(db) {
+                Shops.insertAndGetId {
+                    it[ownerUuid] = owner
+                    it[Shops.ownerName] = ownerName
+                    it[world] = key.world
+                    it[x] = key.x
+                    it[y] = key.y
+                    it[z] = key.z
+                    it[Shops.item] = data
+                    it[itemType] = proto.type.name
+                    it[displayName] = name
+                    it[Shops.quantity] = quantity
+                    it[Shops.price] = price
+                }.value
+            }
+        }) { result ->
+            onDone(result.map { id ->
+                val shop = Shop(id, owner, ownerName, key, proto, name, quantity, price, 0)
+                if (isLoaded(key) && block(key).type !in SHOP_BLOCKS) {
+                    delete(shop)
+                    return@map null
+                }
+                shops[key] = shop
+                if (isLoaded(key)) { // otherwise the decorations spawn when the chunk loads
+                    spawnDecor(shop)
+                    refresh(shop)
+                }
+                shop
+            })
         }
-        val shop = Shop(id, owner, ownerName, key, proto, name, quantity, price, 0)
-        shops[key] = shop
-        spawnDecor(shop)
-        refresh(shop)
-        return shop
     }
 
+    /**
+     * Closes the shop right away (cache and decorations) and deletes its row in the background.
+     * It can't wait for the database: a block break has to be allowed or cancelled on the spot.
+     */
     fun remove(shop: Shop) {
-        transaction(db) { Shops.deleteWhere { id eq shop.id } }
-        shops.remove(shop.key)
+        if (shops[shop.key] === shop) shops.remove(shop.key)
         despawnDecor(shop)
+        delete(shop)
     }
 
-    fun setPrice(shop: Shop, price: Long) {
-        transaction(db) { Shops.update({ Shops.id eq shop.id }) { it[Shops.price] = price } }
-        shop.price = price
-        updateLabel(shop)
-    }
+    private fun delete(shop: Shop) =
+        worker.write("delete shop #${shop.id}; it will come back on the next restart or /shop reload") {
+            transaction(db) { Shops.deleteWhere { id eq shop.id } }
+        }
 
-    fun setName(shop: Shop, name: String?) {
-        transaction(db) { Shops.update({ Shops.id eq shop.id }) { it[displayName] = name } }
-        shop.name = name
-        updateLabel(shop)
-    }
+    fun setPrice(shop: Shop, price: Long, onDone: (Result<Unit>) -> Unit) =
+        save(shop, { it[Shops.price] = price }, onDone) {
+            shop.price = price
+            updateLabel(shop)
+        }
+
+    fun setName(shop: Shop, name: String?, onDone: (Result<Unit>) -> Unit) =
+        save(shop, { it[Shops.displayName] = name }, onDone) {
+            shop.name = name
+            updateLabel(shop)
+        }
 
     /** Sets the floating icon to a copy of [icon], or back to the shop's item if null. */
-    fun setIcon(shop: Shop, icon: ItemStack?) {
+    fun setIcon(shop: Shop, icon: ItemStack?, onDone: (Result<Unit>) -> Unit) {
         val proto = icon?.clone()?.apply { amount = 1 }
-        transaction(db) { Shops.update({ Shops.id eq shop.id }) { it[Shops.icon] = proto?.let(::serialize) } }
-        shop.icon = proto
-        shop.itemDisplay?.takeIf { it.isValid }?.setItemStack(shop.displayIcon)
+        val data = proto?.let(::serialize)
+        save(shop, { it[Shops.icon] = data }, onDone) {
+            shop.icon = proto
+            shop.itemDisplay?.takeIf { it.isValid }?.setItemStack(shop.displayIcon)
+        }
     }
 
-    fun setOwner(shop: Shop, owner: UUID, ownerName: String) {
-        transaction(db) {
-            Shops.update({ Shops.id eq shop.id }) {
-                it[ownerUuid] = owner
-                it[Shops.ownerName] = ownerName
-            }
+    fun setOwner(shop: Shop, owner: UUID, ownerName: String, onDone: (Result<Unit>) -> Unit) =
+        save(shop, {
+            it[Shops.ownerUuid] = owner
+            it[Shops.ownerName] = ownerName
+        }, onDone) {
+            shop.owner = owner
+            shop.ownerName = ownerName
+            updateLabel(shop)
         }
-        shop.owner = owner
-        shop.ownerName = ownerName
-        updateLabel(shop)
-    }
+
+    /** Writes [changes] to the shop's row, then runs [apply] on the main thread so the cache matches. */
+    private fun save(shop: Shop, changes: (UpdateStatement) -> Unit, onDone: (Result<Unit>) -> Unit, apply: () -> Unit) =
+        worker.submit({ transaction(db) { Shops.update({ Shops.id eq shop.id }) { changes(it) } } }) { result ->
+            onDone(result.map { apply() })
+        }
 
     /** The live inventory of the shop block, or null if it is unloaded or no longer a container. */
     fun inventory(shop: Shop): Inventory? {
@@ -184,13 +224,28 @@ class ShopManager(private val plugin: JavaPlugin, private val db: Database) {
         val stock = inv.countItems(shop.item)
         if (stock != shop.stock) {
             shop.stock = stock
-            try {
+            worker.write("save stock for shop #${shop.id}") {
                 transaction(db) { Shops.update({ Shops.id eq shop.id }) { it[Shops.stock] = stock } }
-            } catch (e: SQLException) {
-                plugin.logger.log(Level.WARNING, "Could not save stock for shop #${shop.id}", e)
             }
         }
         updateLabel(shop)
+    }
+
+    /**
+     * Puts [amount] reserved items back into the shop's chest. Whatever doesn't fit, or everything if the chest
+     * is gone, is dropped at the shop. Works for removed shops too, since the chest still belongs to the owner.
+     */
+    fun returnItems(shop: Shop, amount: Int) {
+        val inv = inventory(shop)
+        val leftover = inv?.giveItems(shop.item, amount) ?: amount
+        if (leftover > 0) {
+            if (!isLoaded(shop.key)) {
+                plugin.logger.severe("Could not return $leftover× ${shop.item.type} to shop #${shop.id} at ${shop.key}: chunk unloaded")
+                return
+            }
+            dropItems(center(shop), shop.item, leftover)
+        }
+        if (shops[shop.key] === shop) refresh(shop)
     }
 
     fun center(shop: Shop): Location = block(shop.key).location.add(0.5, 0.5, 0.5)

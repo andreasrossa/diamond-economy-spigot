@@ -36,7 +36,11 @@ import java.util.UUID
  */
 class Bank(private val db: Database) {
 
-    enum class TxType { DEPOSIT, WITHDRAW, PAY, SHOP_PURCHASE }
+    /**
+     * REFUND undoes a payment whose items could not be delivered (the player left first): either a withdrawal
+     * (from = null, the diamonds never left the bank) or a shop purchase (from the shop owner back to the buyer).
+     */
+    enum class TxType { DEPOSIT, WITHDRAW, PAY, SHOP_PURCHASE, REFUND }
 
     data class Account(val uuid: UUID, val name: String, val balance: Long)
 
@@ -77,6 +81,15 @@ class Bank(private val db: Database) {
         atomically {
             credit(id, amount)
             log(TxType.DEPOSIT, null, id, amount)
+            true
+        }
+    }
+
+    /** Gives back a withdrawal whose diamonds were never handed out. */
+    fun refundWithdrawal(id: UUID, amount: Long) {
+        atomically {
+            credit(id, amount)
+            log(TxType.REFUND, null, id, amount)
             true
         }
     }
